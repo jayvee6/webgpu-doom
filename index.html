@@ -66,6 +66,10 @@
       #err .title { color: #ff8a8a; text-shadow: 0 0 14px rgba(255,120,120,.5); font-size: clamp(22px, 4vw, 40px); }
       #err .msg { max-width: 40ch; font-size: 14px; line-height: 1.6; color: #e7b0b0; white-space: pre-wrap; }
 
+      /* Weapon overlay (Canvas2D) */
+      #weapon { position: fixed; inset: 0; z-index: 4; pointer-events: none; image-rendering: pixelated; }
+      #weapon[hidden] { display: none; }
+
       /* Crosshair */
       #crosshair { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; pointer-events: none; }
       #crosshair[hidden] { display: none; }
@@ -84,6 +88,8 @@
   </head>
   <body>
     <div id="app"><canvas id="gfx"></canvas></div>
+
+    <canvas id="weapon" hidden></canvas>
 
     <div id="crosshair" hidden>
       <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">

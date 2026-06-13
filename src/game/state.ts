@@ -45,6 +45,7 @@ export interface Player {
   health: number;
   armor: number;
   dead: boolean;
+  ammo: { bul: number; shl: number; rck: number; cel: number };
   /** Key colors held (for locked doors). */
   keys: Set<"blue" | "yellow" | "red">;
 }
@@ -52,7 +53,7 @@ export interface Player {
 export class GameState {
   readonly map: DoomMap;
   readonly entities: Entity[] = [];
-  readonly player: Player = { health: 100, armor: 0, dead: false, keys: new Set() };
+  readonly player: Player = { health: 100, armor: 0, dead: false, ammo: { bul: 50, shl: 0, rck: 0, cel: 0 }, keys: new Set() };
   unmappedTypes = 0;
 
   constructor(map: DoomMap, lib: SpriteLib) {

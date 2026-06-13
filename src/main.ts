@@ -8,6 +8,7 @@ import { Blockmap } from "./game/blockmap";
 import { GameState } from "./game/state";
 import { updateEntities, hasSight } from "./game/ai";
 import { fireHitscan } from "./game/combat";
+import { applyPickup } from "./game/items";
 import { loadPalettes, paletteRGBA, buildLitPalette } from "./wad/graphics";
 import { TextureLib } from "./wad/textures";
 import { SpriteLib } from "./wad/sprites";
@@ -16,6 +17,7 @@ import { World } from "./render/world";
 import { TextureAtlas } from "./render/atlas";
 import { Sky } from "./render/sky";
 import { SpriteRenderer, type SpriteRequest } from "./render/sprites";
+import { WeaponHUD } from "./render/weapon";
 import { buildWalls } from "./geometry/walls";
 import { buildFlats } from "./geometry/flats";
 import { FreeFlyCamera } from "./camera/freefly";
@@ -147,6 +149,10 @@ async function main() {
   const monsterTotal = state.entities.filter((e) => e.kind === "monster").length;
   const aliveMonsters = () => state.entities.reduce((n, e) => n + (e.kind === "monster" && e.mstate !== "dead" ? 1 : 0), 0);
 
+  // First-person weapon overlay (Canvas2D).
+  const weaponCanvas = $("weapon") as HTMLCanvasElement;
+  const weapon = new WeaponHUD(weaponCanvas, wad, basePalette);
+
   // Camera at player-1 start, eye height above the floor it stands on.
   const p1 = map.things.find((t) => t.type === 1);
   const startX = p1 ? p1.x : 0;
@@ -197,7 +203,7 @@ async function main() {
     if (playing()) cam.onMouse(e.movementX, e.movementY);
   });
 
-  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, updateEntities, fireHitscan, hasSight };
+  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, updateEntities, fireHitscan, hasSight, applyPickup, weapon };
 
   // "Use" (spacebar): trigger the nearest usable line ~52 units in front.
   function doUse(): void {
@@ -261,8 +267,22 @@ async function main() {
   let respawnTimer = 0;
   function fire(): void {
     if (fireCd > 0 || state.player.dead || mode !== "world") return;
+    if (state.player.ammo.bul <= 0) return; // out of bullets
     fireCd = 0.16;
+    state.player.ammo.bul--;
+    weapon.onFire();
     fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.yaw);
+  }
+
+  // Pick up items the player walks over (item disappears via active=false).
+  function checkPickups(): void {
+    const px = cam.pos[0], py = -cam.pos[2];
+    for (const e of state.entities) {
+      if (e.kind !== "item" || !e.active) continue;
+      if (Math.hypot(e.x - px, e.y - py) < e.radius + 16) {
+        if (applyPickup(state.player, e.type)) e.active = false;
+      }
+    }
   }
   function damagePlayer(amount: number): void {
     if (state.player.dead) return;
@@ -300,9 +320,10 @@ async function main() {
     else walkStep(dt);
     mapState.update(dt);
 
-    // Combat timers, monster AI, respawn.
+    // Combat timers, monster AI, pickups, respawn.
     fireCd -= dt;
     if (state.player.dead) { respawnTimer -= dt; if (respawnTimer <= 0) respawn(); }
+    else checkPickups();
     updateEntities(state.entities, dt, { map, blockmap, px: cam.pos[0], py: -cam.pos[2], damagePlayer });
   }
 
@@ -330,7 +351,16 @@ async function main() {
     ];
 
     world.setHeights(mapState.heights());
-    elCrosshair.hidden = !(playing() && mode === "world");
+    const inGame = playing() && mode === "world";
+    elCrosshair.hidden = !inGame;
+
+    // First-person weapon overlay (rendered with the world; bobs only when walking).
+    const showWeapon = mode === "world" && !state.player.dead;
+    weaponCanvas.hidden = !showWeapon;
+    if (showWeapon) {
+      const pin = cam.planarInput();
+      weapon.draw(inGame && moveMode === "walk" && (pin[0] !== 0 || pin[1] !== 0), dt);
+    }
 
     // Rebuild billboards from live entities (the dynamic-sprite path).
     billboards.length = 0;
@@ -368,8 +398,8 @@ async function main() {
     frame++; fpsN++;
     if (now - fpsT >= 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
     hud.textContent =
-      `webgpu-doom — P3 combat   [${mode} · ${moveMode}]  (CLICK fire · Space use · M map · F fly · WASD)\n` +
-      `HEALTH ${state.player.health}   ·   monsters ${aliveMonsters()}/${monsterTotal}   ·   ${fps} fps\n` +
+      `webgpu-doom — P3.5 pickups   [${mode} · ${moveMode}]  (CLICK fire · Space use · M map · F fly · WASD)\n` +
+      `HEALTH ${state.player.health}  ARMOR ${state.player.armor}  AMMO ${state.player.ammo.bul}  ·  monsters ${aliveMonsters()}/${monsterTotal}  ·  ${fps} fps\n` +
       `${map.name}  pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);
   }
