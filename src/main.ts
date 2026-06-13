@@ -1,6 +1,8 @@
 import { initGpu } from "./gpu/device";
 import { Wad } from "./wad/reader";
-import { loadMap, NF_SUBSECTOR, type DoomMap } from "./wad/maps";
+import { loadMap } from "./wad/maps";
+import { locateSector } from "./wad/bsp";
+import { blocked } from "./game/collision";
 import { loadPalettes, paletteRGBA } from "./wad/graphics";
 import { TextureLib } from "./wad/textures";
 import { SpriteLib } from "./wad/sprites";
@@ -29,29 +31,9 @@ function fatal(e: unknown): never {
   throw e;
 }
 
-/** Descend the BSP to the subsector containing (x,y); return its sector index, or -1. */
-function locateSector(map: DoomMap, x: number, y: number): number {
-  if (map.nodes.length === 0) return -1;
-  let nodeIdx = map.nodes.length - 1;
-  for (let guard = 0; guard < 256; guard++) {
-    const node = map.nodes[nodeIdx]!;
-    const cross = node.dx * (y - node.y) - node.dy * (x - node.x);
-    const child = cross <= 0 ? node.rightChild : node.leftChild;
-    if (child & NF_SUBSECTOR) {
-      const ss = map.subsectors[child & 0x7fff];
-      if (!ss) return -1;
-      const seg = map.segs[ss.firstSeg];
-      if (!seg) return -1;
-      const ld = map.linedefs[seg.linedef];
-      if (!ld) return -1;
-      const sideIdx = seg.side === 0 ? ld.right : ld.left;
-      if (sideIdx < 0) return -1;
-      return map.sidedefs[sideIdx]!.sector;
-    }
-    nodeIdx = child;
-  }
-  return -1;
-}
+const WALK_SPEED = 300;
+const RUN_SPEED = 500;
+const GRAVITY = 1800;
 
 async function main() {
   const canvas = document.getElementById("gfx") as HTMLCanvasElement;
@@ -117,10 +99,12 @@ async function main() {
   const cam = new FreeFlyCamera(startPos, startYaw);
 
   let mode: "world" | "automap" = "world";
+  let moveMode: "walk" | "fly" = "walk";
 
   // Input
   addEventListener("keydown", (e) => {
     if (e.code === "KeyM") { mode = mode === "world" ? "automap" : "world"; return; }
+    if (e.code === "KeyF") { moveMode = moveMode === "walk" ? "fly" : "walk"; cam.vz = 0; return; }
     cam.onKey(e.code, true);
   });
   addEventListener("keyup", (e) => cam.onKey(e.code, false));
@@ -130,6 +114,33 @@ async function main() {
   });
 
   (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites };
+
+  // Walk physics: collide + slide against walls, follow floor, fall with gravity.
+  function walkStep(dt: number): void {
+    const [idx, idy] = cam.planarInput();
+    let mx = cam.pos[0], my = -cam.pos[2];
+    const curSec = locateSector(map, mx, my);
+    const pf = curSec >= 0 ? map.sectors[curSec]!.floorHeight : 0;
+    const dd = (cam.running() ? RUN_SPEED : WALK_SPEED) * dt;
+    const ddx = idx * dd, ddy = idy * dd;
+    if (ddx !== 0 && !blocked(map, mx + ddx, my, pf)) mx += ddx;
+    if (ddy !== 0 && !blocked(map, mx, my + ddy, pf)) my += ddy;
+    cam.pos[0] = mx; cam.pos[2] = -my;
+
+    const sec = locateSector(map, mx, my);
+    const floorZ = sec >= 0 ? map.sectors[sec]!.floorHeight : pf;
+    const ceilZ = sec >= 0 ? map.sectors[sec]!.ceilHeight : 1e9;
+    const eyeTarget = floorZ + EYE_HEIGHT;
+    if (cam.pos[1] <= eyeTarget) {
+      cam.pos[1] = eyeTarget; cam.vz = 0; // grounded / stepped up
+    } else {
+      cam.vz -= GRAVITY * dt;
+      cam.pos[1] += cam.vz * dt;
+      if (cam.pos[1] < eyeTarget) { cam.pos[1] = eyeTarget; cam.vz = 0; }
+    }
+    const headMax = ceilZ - 8;
+    if (cam.pos[1] > headMax) { cam.pos[1] = headMax; if (cam.vz > 0) cam.vz = 0; }
+  }
 
   let lastW = 0, lastH = 0;
   let prev = performance.now();
@@ -143,7 +154,8 @@ async function main() {
     const w = canvas.width, h = canvas.height;
     if (w !== lastW || h !== lastH) { lastW = w; lastH = h; wireframe.setView(w, h); }
 
-    cam.update(dt);
+    if (moveMode === "fly") cam.update(dt);
+    else walkStep(dt);
     const aspect = w / h;
     const colorView = gpu.context.getCurrentTexture().createView();
     const encoder = gpu.device.createCommandEncoder({ label: "frame" });
@@ -173,7 +185,7 @@ async function main() {
     frame++; fpsN++;
     if (now - fpsT >= 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
     hud.textContent =
-      `webgpu-doom — M5 sprites   [${mode}]  (M: toggle · click: mouselook · WASD+QE)\n` +
+      `webgpu-doom — M6 walk   [${mode} · ${moveMode}]  (M: map · F: fly/walk · click: mouselook · WASD)\n` +
       `${map.name}  ${world.count} verts  ·  ${fps} fps\n` +
       `pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°  pitch ${((cam.pitch * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);

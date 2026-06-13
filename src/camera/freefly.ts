@@ -15,6 +15,7 @@ export class FreeFlyCamera {
   near = 1;
   far = 12000;
   speed = 350; // units/sec
+  vz = 0; // vertical velocity (walk-mode gravity)
   private keys = new Set<string>();
 
   constructor(pos: Vec3, yaw = 0) {
@@ -30,6 +31,24 @@ export class FreeFlyCamera {
   onKey(code: string, down: boolean): void {
     if (down) this.keys.add(code);
     else this.keys.delete(code);
+  }
+
+  /** Desired horizontal move direction in MAP space (x,y), normalized; [0,0] if idle. */
+  planarInput(): [number, number] {
+    const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
+    // map forward = (sin yaw, cos yaw); map right = (cos yaw, -sin yaw)
+    let mx = 0, my = 0;
+    if (this.keys.has("KeyW")) { mx += sy; my += cy; }
+    if (this.keys.has("KeyS")) { mx -= sy; my -= cy; }
+    if (this.keys.has("KeyD")) { mx += cy; my -= sy; }
+    if (this.keys.has("KeyA")) { mx -= cy; my += sy; }
+    const len = Math.hypot(mx, my);
+    if (len > 0) { mx /= len; my /= len; }
+    return [mx, my];
+  }
+
+  running(): boolean {
+    return this.keys.has("ShiftRight") || this.keys.has("ShiftLeft");
   }
 
   onMouse(dx: number, dy: number, sens = 0.0022): void {
