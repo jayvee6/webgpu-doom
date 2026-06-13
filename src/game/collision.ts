@@ -41,7 +41,7 @@ export function blocked(map: DoomMap, x: number, y: number, pf: number, radius =
   return false;
 }
 
-function distSqPointSeg(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+export function distSqPointSeg(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax, dy = by - ay;
   const len2 = dx * dx + dy * dy;
   let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;

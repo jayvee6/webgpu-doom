@@ -1,9 +1,15 @@
 /**
- * M4 world renderer: palette-indexed textured triangles.
- * Vertex: position xyz · uv (texels) · light · texId (7 f32, 28-byte stride).
- * Fragment wraps uv into the texture's atlas rect with integer modulo, point-
- * samples the R8Uint atlas to a palette index, then looks up RGB in the palette
- * texture. No sampler / no filtering — palette indices must never be interpolated.
+ * World renderer with DYNAMIC sector heights (for doors/lifts/moving floors).
+ * Each vertex stores (x, z, heightIndex) instead of a baked Y; the vertex shader
+ * reads the live height from a storage buffer indexed by heightIndex
+ * (sector*2 + 0=floor / 1=ceil). Updating that small buffer animates all walls +
+ * flats touching a sector for free — no mesh rebuild.
+ *
+ * Vertex (9 f32, 36-byte stride):
+ *   a: vec3f = (x, z, heightIndex)
+ *   b: vec2f = (u, vBase)
+ *   c: vec4f = (vTop, vMode, light, texId)
+ * V coord: flat (vMode 0) → vBase; wall (vMode 1) → vBase + (vTop - worldY).
  */
 
 import type { TextureAtlas } from "./atlas";
@@ -13,6 +19,7 @@ const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
 const WGSL = /* wgsl */ `
 struct Frame { vp : mat4x4f, camPos : vec3f, _pad : f32 };
 @group(0) @binding(0) var<uniform> frame : Frame;
+@group(0) @binding(1) var<storage, read> heights : array<f32>;
 
 @group(1) @binding(0) var atlasTex : texture_2d<u32>;
 @group(1) @binding(1) var palette  : texture_2d<f32>;
@@ -27,14 +34,17 @@ struct VSOut {
 };
 
 @vertex
-fn vs(@location(0) pos : vec3f, @location(1) uv : vec2f,
-      @location(2) light : f32, @location(3) texId : f32) -> VSOut {
+fn vs(@location(0) a : vec3f, @location(1) b : vec2f, @location(2) c : vec4f) -> VSOut {
+  let y = heights[u32(a.z + 0.5)];
+  let world = vec3f(a.x, y, a.y);
   var o : VSOut;
-  o.clip = frame.vp * vec4f(pos, 1.0);
-  o.uv = uv;
-  o.light = light;
-  o.texId = u32(texId + 0.5);
-  o.world = pos;
+  o.clip = frame.vp * vec4f(world, 1.0);
+  let isWall = c.y > 0.5;
+  let V = select(b.y, b.y + (c.x - y), isWall);
+  o.uv = vec2f(b.x, V);
+  o.light = c.z;
+  o.texId = u32(c.w + 0.5);
+  o.world = world;
   return o;
 }
 
@@ -43,13 +53,11 @@ fn fs(in : VSOut) -> @location(0) vec4f {
   let r = rects[in.texId];
   let w = f32(r.z);
   let h = f32(r.w);
-  // Integer-modulo wrap so textures tile correctly within their atlas cell.
   let uu = in.uv.x - floor(in.uv.x / w) * w;
   let vv = in.uv.y - floor(in.uv.y / h) * h;
   let coord = vec2u(r.x + u32(uu), r.y + u32(vv));
   let palIdx = textureLoad(atlasTex, coord, 0).r;
   let rgb = textureLoad(palette, vec2u(palIdx, 0u), 0).rgb;
-  // Doom-style distance diminishing: dim with range, brighter sectors see farther.
   let dist = length(in.world - frame.camPos);
   let reach = mix(700.0, 2200.0, in.light);
   let fog = clamp(1.0 - max(dist - 224.0, 0.0) / reach, 0.22, 1.0);
@@ -61,15 +69,20 @@ export class World {
   private readonly device: GPUDevice;
   private readonly pipeline: GPURenderPipeline;
   private readonly ubuf: GPUBuffer;
+  private readonly hbuf: GPUBuffer;
   private readonly frameBG: GPUBindGroup;
   private readonly atlasBG: GPUBindGroup;
-  private vbuf: GPUBuffer;
+  private readonly vbuf: GPUBuffer;
   private vertexCount: number;
   private depth: GPUTexture | null = null;
   private depthW = 0;
   private depthH = 0;
 
-  constructor(device: GPUDevice, format: GPUTextureFormat, mesh: Float32Array<ArrayBuffer>, vertexCount: number, atlas: TextureAtlas) {
+  constructor(
+    device: GPUDevice, format: GPUTextureFormat,
+    mesh: Float32Array<ArrayBuffer>, vertexCount: number,
+    atlas: TextureAtlas, heightCount: number,
+  ) {
     this.device = device;
     this.vertexCount = vertexCount;
     this.atlasBG = atlas.bindGroup;
@@ -82,11 +95,23 @@ export class World {
     device.queue.writeBuffer(this.vbuf, 0, mesh);
 
     this.ubuf = device.createBuffer({ label: "world-frame", size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.hbuf = device.createBuffer({ label: "world-heights", size: Math.max(16, heightCount * 4), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+
     const frameBGL = device.createBindGroupLayout({
       label: "world-frame-bgl",
-      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }],
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+      ],
     });
-    this.frameBG = device.createBindGroup({ label: "world-frame-bg", layout: frameBGL, entries: [{ binding: 0, resource: { buffer: this.ubuf } }] });
+    this.frameBG = device.createBindGroup({
+      label: "world-frame-bg",
+      layout: frameBGL,
+      entries: [
+        { binding: 0, resource: { buffer: this.ubuf } },
+        { binding: 1, resource: { buffer: this.hbuf } },
+      ],
+    });
 
     const module = device.createShaderModule({ label: "world-wgsl", code: WGSL });
     this.pipeline = device.createRenderPipeline({
@@ -97,12 +122,11 @@ export class World {
         entryPoint: "vs",
         buffers: [
           {
-            arrayStride: 7 * 4,
+            arrayStride: 9 * 4,
             attributes: [
               { shaderLocation: 0, offset: 0, format: "float32x3" },
               { shaderLocation: 1, offset: 3 * 4, format: "float32x2" },
-              { shaderLocation: 2, offset: 5 * 4, format: "float32" },
-              { shaderLocation: 3, offset: 6 * 4, format: "float32" },
+              { shaderLocation: 2, offset: 5 * 4, format: "float32x4" },
             ],
           },
         ],
@@ -118,6 +142,10 @@ export class World {
     buf.set(vp, 0);
     buf[16] = camPos[0]; buf[17] = camPos[1]; buf[18] = camPos[2];
     this.device.queue.writeBuffer(this.ubuf, 0, buf);
+  }
+
+  setHeights(heights: Float32Array<ArrayBuffer>): void {
+    this.device.queue.writeBuffer(this.hbuf, 0, heights);
   }
 
   private ensureDepth(w: number, h: number): GPUTextureView {
@@ -160,7 +188,6 @@ export class World {
     return this.vertexCount;
   }
 
-  /** A view of the current depth texture (for a follow-on sky pass that loads it). */
   depthView(): GPUTextureView {
     return this.ensureDepth(this.depthW, this.depthH);
   }

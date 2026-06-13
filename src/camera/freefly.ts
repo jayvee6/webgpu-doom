@@ -66,8 +66,8 @@ export class FreeFlyCamera {
     if (this.keys.has("KeyS")) { mx -= fx; mz -= fz; }
     if (this.keys.has("KeyD")) { mx += rx; mz += rz; }
     if (this.keys.has("KeyA")) { mx -= rx; mz -= rz; }
-    if (this.keys.has("KeyE") || this.keys.has("Space")) my += 1;
-    if (this.keys.has("KeyQ") || this.keys.has("ShiftLeft")) my -= 1;
+    if (this.keys.has("KeyE")) my += 1;
+    if (this.keys.has("KeyQ")) my -= 1;
 
     const boost = this.keys.has("ShiftRight") ? 3 : 1;
     const len = Math.hypot(mx, mz);
