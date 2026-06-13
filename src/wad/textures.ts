@@ -133,22 +133,35 @@ export class TextureLib {
     if (cached !== undefined) return cached;
     const idx = this.wad.indexOf(name);
     if (idx < 0) { this.patchCache.set(name, null); return null; }
-    const img = decodePatch(this.wad.data(idx));
+    const full = decodePatchFull(this.wad.data(idx));
+    const img = full ? { width: full.width, height: full.height, indices: full.indices } : null;
     this.patchCache.set(name, img);
     return img;
   }
 }
 
-/** Decode Doom patch picture format → fully expanded indexed image (0 = transparent gap). */
-function decodePatch(bytes: Uint8Array): IndexedImage | null {
+/** Patch with offsets + a painted-pixel mask (sprites need both; gaps are alpha, not index 0). */
+export interface PatchImage {
+  width: number;
+  height: number;
+  leftOffset: number;
+  topOffset: number;
+  indices: Uint8Array;
+  mask: Uint8Array; // 1 = painted, 0 = transparent gap
+}
+
+/** Decode Doom patch picture (column/post) format, capturing offsets and a transparency mask. */
+export function decodePatchFull(bytes: Uint8Array): PatchImage | null {
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const width = v.getInt16(0, true);
   const height = v.getInt16(2, true);
+  const leftOffset = v.getInt16(4, true);
+  const topOffset = v.getInt16(6, true);
   if (width <= 0 || height <= 0 || width > 4096 || height > 4096) return null;
   const indices = new Uint8Array(width * height);
+  const mask = new Uint8Array(width * height);
   for (let x = 0; x < width; x++) {
     let colOfs = v.getUint32(8 + x * 4, true);
-    // Walk posts until topdelta == 0xFF.
     let guard = 0;
     while (colOfs < bytes.length && guard++ < 1024) {
       const topDelta = bytes[colOfs]!;
@@ -157,12 +170,15 @@ function decodePatch(bytes: Uint8Array): IndexedImage | null {
       const pixStart = colOfs + 3; // skip topdelta, length, 1 pad byte
       for (let y = 0; y < len; y++) {
         const dy = topDelta + y;
-        if (dy >= 0 && dy < height) indices[dy * width + x] = bytes[pixStart + y]!;
+        if (dy >= 0 && dy < height) {
+          indices[dy * width + x] = bytes[pixStart + y]!;
+          mask[dy * width + x] = 1;
+        }
       }
       colOfs = pixStart + len + 1; // skip pixels + trailing pad byte
     }
   }
-  return { width, height, indices };
+  return { width, height, leftOffset, topOffset, indices, mask };
 }
 
 /** Stamp a patch into a texture canvas at (ox,oy), clipping to bounds. Index 0 = skip (gap). */

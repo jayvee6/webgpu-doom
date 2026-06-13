@@ -3,10 +3,13 @@ import { Wad } from "./wad/reader";
 import { loadMap, NF_SUBSECTOR, type DoomMap } from "./wad/maps";
 import { loadPalettes, paletteRGBA } from "./wad/graphics";
 import { TextureLib } from "./wad/textures";
+import { SpriteLib } from "./wad/sprites";
+import { thingSprite } from "./wad/thingtypes";
 import { Wireframe } from "./render/wireframe";
 import { World } from "./render/world";
 import { TextureAtlas } from "./render/atlas";
 import { Sky } from "./render/sky";
+import { SpriteRenderer, type SpriteRequest } from "./render/sprites";
 import { buildWalls } from "./geometry/walls";
 import { buildFlats } from "./geometry/flats";
 import { FreeFlyCamera } from "./camera/freefly";
@@ -82,9 +85,26 @@ async function main() {
   const totalVerts = walls.vertexCount + flats.vertexCount;
   const world = new World(gpu.device, gpu.format, mesh, totalVerts, atlas);
   const wireframe = new Wireframe(gpu.device, gpu.format, map);
+
+  // Sprites (THINGS): resolve each thing's spawn sprite → billboard request.
+  const spriteLib = new SpriteLib(wad, basePalette);
+  const requests: SpriteRequest[] = [];
+  let unmappedTypes = 0;
+  for (const t of map.things) {
+    const ts = thingSprite(t.type);
+    if (!ts) { unmappedTypes++; continue; }
+    const lump = spriteLib.resolveLump(ts.sprite, ts.frame);
+    if (!lump) continue;
+    const sec = locateSector(map, t.x, t.y);
+    const floor = sec >= 0 ? map.sectors[sec]!.floorHeight : 0;
+    const light = sec >= 0 ? map.sectors[sec]!.light / 255 : 1;
+    requests.push({ lump, x: t.x, y: t.y, floor, light });
+  }
+  const sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, requests);
   console.log(`textures: ${names.length} names, atlas 2048×${atlas.atlasHeight}, ${atlas.missing.length} missing` +
     (atlas.missing.length ? ` (${atlas.missing.slice(0, 12).join(", ")}${atlas.missing.length > 12 ? "…" : ""})` : ""));
   console.log(`geometry: ${walls.vertexCount} wall-verts + ${flats.vertexCount} flat-verts; ${flats.failedSectors} sectors failed triangulation`);
+  console.log(`sprites: ${sprites.instanceCount} things drawn, ${unmappedTypes} unmapped types, ${sprites.missing.length} missing sprite lumps`);
 
   // Camera at player-1 start, eye height above the floor it stands on.
   const p1 = map.things.find((t) => t.type === 1);
@@ -109,7 +129,7 @@ async function main() {
     if (document.pointerLockElement === canvas) cam.onMouse(e.movementX, e.movementY);
   });
 
-  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib };
+  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites };
 
   let lastW = 0, lastH = 0;
   let prev = performance.now();
@@ -132,6 +152,10 @@ async function main() {
       const vp = cam.viewProj(aspect);
       world.setFrame(vp, cam.pos);
       world.render(encoder, colorView, w, h);
+      // Sprites after world (depth-tested + writing), before sky.
+      const camRight: [number, number, number] = [Math.cos(cam.yaw), 0, Math.sin(cam.yaw)];
+      sprites.setFrame(vp, cam.pos, camRight);
+      sprites.render(encoder, colorView, world.depthView());
       if (sky.skyId >= 0) {
         sky.setFrame(invert(vp), cam.pos);
         sky.render(encoder, colorView, world.depthView());
@@ -149,7 +173,7 @@ async function main() {
     frame++; fpsN++;
     if (now - fpsT >= 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
     hud.textContent =
-      `webgpu-doom — M4 textured   [${mode}]  (M: toggle · click: mouselook · WASD+QE)\n` +
+      `webgpu-doom — M5 sprites   [${mode}]  (M: toggle · click: mouselook · WASD+QE)\n` +
       `${map.name}  ${world.count} verts  ·  ${fps} fps\n` +
       `pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°  pitch ${((cam.pitch * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);
