@@ -81,17 +81,30 @@ export class SoundSystem {
     let buf: AudioBuffer | null = null;
     const idx = this.wad.indexOf(name);
     if (idx >= 0 && this.ctx) {
-      const data = this.wad.data(name);
-      const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
-      const format = v.getUint16(0, true);
-      const rate = v.getUint16(2, true) || 11025;
-      const count = v.getUint32(4, true);
-      if (format === 3 && count > 32 && 8 + count <= data.byteLength) {
-        const start = 8 + 16, end = 8 + count - 16; // trim the pad samples
-        const n = end - start;
-        buf = this.ctx.createBuffer(1, n, rate);
-        const ch = buf.getChannelData(0);
-        for (let i = 0; i < n; i++) ch[i] = (data[start + i]! - 128) / 128;
+      try {
+        const data = this.wad.data(name);
+        if (data.byteLength >= 8) {
+          const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
+          const format = v.getUint16(0, true);
+          let rate = v.getUint16(2, true);
+          // A junk rate outside Web Audio's accepted range throws createBuffer;
+          // fall back to Doom's usual 11025 Hz.
+          if (rate < 8000 || rate > 48000) rate = 11025;
+          const count = v.getUint32(4, true);
+          if (format === 3 && count > 32 && 8 + count <= data.byteLength) {
+            const start = 8 + 16, end = 8 + count - 16; // trim the pad samples
+            const n = end - start;
+            if (n > 0) {
+              buf = this.ctx.createBuffer(1, n, rate);
+              const ch = buf.getChannelData(0);
+              for (let i = 0; i < n; i++) ch[i] = (data[start + i]! - 128) / 128;
+            }
+          }
+        }
+      } catch {
+        // Malformed lump — cache the failure so a bad sound never throws into a
+        // gameplay frame, and never retries the decode.
+        buf = null;
       }
     }
     this.cache.set(name, buf);

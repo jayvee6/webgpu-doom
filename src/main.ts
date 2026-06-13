@@ -128,8 +128,14 @@ async function main() {
   const itemsTaken = () => itemTotal - state.entities.reduce((n, e) => n + (e.kind === "item" && e.active ? 1 : 0), 0);
 
   function buildLevel(name: string): void {
-    // Free the previous level's GPU resources.
-    world?.dispose(); sky?.dispose(); wireframe?.dispose(); sprites?.dispose(); atlas?.dispose();
+    // Free the previous level's GPU resources — but only after the in-flight frame
+    // (which may still reference these textures) has finished on the GPU. A level
+    // transition is triggered from a click handler that can land between submit()
+    // and GPU completion, so a synchronous destroy would race that frame.
+    if (world) {
+      const stale = [world, sky, wireframe, sprites, atlas];
+      void gpu.device.queue.onSubmittedWorkDone().then(() => { for (const r of stale) r.dispose(); });
+    }
 
     currentMap = name;
     map = loadMap(wad, name);
@@ -264,7 +270,12 @@ async function main() {
     if (playing()) cam.onMouse(e.movementX, e.movementY);
   });
 
-  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound, lights };
+  // Debug surface. A live getter over the per-level `let` bindings — so it never
+  // points at (or retains) a disposed level after buildLevel() swaps them out.
+  Object.defineProperty(window, "__doom", {
+    configurable: true,
+    get: () => ({ gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound, lights }),
+  });
 
   // "Use" (spacebar): trigger the nearest usable line ~52 units in front.
   function doUse(): void {
