@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+
+# WADs are fetched, never committed (keep repo asset-clean)
+public/*.wad
+*.wad

@@ -1,0 +1,19 @@
+{
+  "name": "webgpu-doom",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "From-scratch WebGPU renderer for Freedoom — parse the IWAD, build real 3D geometry, render with raw WGSL.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "fetch-wad": "bash scripts/fetch-wad.sh",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.60",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}
