@@ -31,6 +31,25 @@ export interface AIContext {
   px: number; // player map x
   py: number; // player map y
   damagePlayer: (amount: number) => void;
+  playSound: (name: string, x: number, y: number) => void;
+}
+
+type SoundKind = "sight" | "pain" | "death" | "melee";
+// Per-monster Doom SFX (one variant each); fallback = imp.
+const SOUNDS: Record<string, Record<SoundKind, string>> = {
+  POSS: { sight: "DSPOSIT1", pain: "DSPOPAIN", death: "DSPODTH1", melee: "DSPISTOL" },
+  SPOS: { sight: "DSPOSIT2", pain: "DSPOPAIN", death: "DSPODTH2", melee: "DSSHOTGN" },
+  CPOS: { sight: "DSPOSIT3", pain: "DSPOPAIN", death: "DSPODTH3", melee: "DSSHOTGN" },
+  TROO: { sight: "DSBGSIT1", pain: "DSPOPAIN", death: "DSBGDTH1", melee: "DSCLAW" },
+  SARG: { sight: "DSSGTSIT", pain: "DSDMPAIN", death: "DSSGTDTH", melee: "DSSGTATK" },
+  HEAD: { sight: "DSCACSIT", pain: "DSDMPAIN", death: "DSCACDTH", melee: "DSCLAW" },
+  BOSS: { sight: "DSBRSSIT", pain: "DSDMPAIN", death: "DSBRSDTH", melee: "DSCLAW" },
+  SKUL: { sight: "DSSKLATK", pain: "DSDMPAIN", death: "DSFIRXPL", melee: "DSSKLATK" },
+};
+const FALLBACK = SOUNDS.TROO!;
+
+export function monsterSound(sprite: string, kind: SoundKind): string {
+  return (SOUNDS[sprite] ?? FALLBACK)[kind];
 }
 
 export function updateEntities(entities: Entity[], dt: number, ctx: AIContext): void {
@@ -52,15 +71,21 @@ function updateMonster(e: Entity, dt: number, ctx: AIContext): void {
   const dist = Math.hypot(dx, dy) || 1;
 
   if (e.mstate === "idle") {
-    if (dist < SIGHT_RANGE && hasSight(ctx.map, ctx.blockmap, e.x, e.y, ctx.px, ctx.py)) e.mstate = "chase";
-    else return;
+    if (dist < SIGHT_RANGE && hasSight(ctx.map, ctx.blockmap, e.x, e.y, ctx.px, ctx.py)) {
+      e.mstate = "chase";
+      ctx.playSound(monsterSound(e.sprite4, "sight"), e.x, e.y);
+    } else return;
   }
 
   e.angle = (Math.atan2(dy, dx) * 180) / Math.PI;
 
   if (dist <= e.radius + ATTACK_RANGE) {
     e.mstate = "attack";
-    if (e.cooldown <= 0) { ctx.damagePlayer(MELEE_DAMAGE); e.cooldown = ATTACK_COOLDOWN; }
+    if (e.cooldown <= 0) {
+      ctx.damagePlayer(MELEE_DAMAGE);
+      ctx.playSound(monsterSound(e.sprite4, "melee"), e.x, e.y);
+      e.cooldown = ATTACK_COOLDOWN;
+    }
   } else {
     e.mstate = "chase";
     const sp = MONSTER_SPEED * dt;

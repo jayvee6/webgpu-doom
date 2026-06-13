@@ -39,10 +39,22 @@ export class MapState {
   private readonly triggered = new Set<number>(); // once-only line indices
   private readonly _heights: Float32Array<ArrayBuffer>;
   onExit: (() => void) | null = null;
+  onSound: ((name: string, x: number, y: number) => void) | null = null;
 
   constructor(map: DoomMap) {
     this.map = map;
     this._heights = new Float32Array(map.sectors.length * 2);
+  }
+
+  private playAt(sector: number, name: string): void {
+    if (!this.onSound) return;
+    let sx = 0, sy = 0, n = 0;
+    for (const ld of this.map.linedefs) {
+      const f = ld.right >= 0 ? this.map.sidedefs[ld.right]!.sector : -1;
+      const b = ld.left >= 0 ? this.map.sidedefs[ld.left]!.sector : -1;
+      if (f === sector || b === sector) { const v = this.map.vertexes[ld.v1]!; sx += v.x; sy += v.y; n++; }
+    }
+    if (n > 0) this.onSound(name, sx / n, sy / n);
   }
 
   /** Live heights for the GPU (floor=i*2, ceil=i*2+1), rebuilt from sectors. */
@@ -87,6 +99,11 @@ export class MapState {
   /** Spacebar use on a line. */
   useLine(lineIdx: number): boolean {
     const ld = this.map.linedefs[lineIdx]!;
+    // Switch click sound (lifts/floors/exit are switches, not doors).
+    if (this.onSound && [62, 61, 103, 63, 23, 29, 42, 11].includes(ld.special)) {
+      const v = this.map.vertexes[ld.v1]!;
+      this.onSound("DSSWTCHN", v.x, v.y);
+    }
     switch (ld.special) {
       case 1: case 26: case 31: return this.manualDoor(ld.left, DOOR_SPEED);
       case 117: return this.manualDoor(ld.left, BLAZE_SPEED);
@@ -137,8 +154,10 @@ export class MapState {
     // Open if (nearly) closed, else close. Auto-closes after a wait when opening.
     if (sec.ceilHeight <= closed + 8) {
       this.movers.set(sector, { sector, field: "ceilHeight", speed, idx: 0, waiting: false, waitLeft: 0, phases: [{ target: open, wait: DOOR_WAIT }, { target: closed, wait: 0 }] });
+      this.playAt(sector, "DSDOROPN");
     } else {
       this.movers.set(sector, { sector, field: "ceilHeight", speed, idx: 0, waiting: false, waitLeft: 0, phases: [{ target: closed, wait: 0 }] });
+      this.playAt(sector, "DSDORCLS");
     }
     return true;
   }
@@ -147,6 +166,7 @@ export class MapState {
     if (this.movers.has(sector)) return;
     const open = this.lowestNeighborCeiling(sector) - 4;
     this.movers.set(sector, { sector, field: "ceilHeight", speed: DOOR_SPEED, idx: 0, waiting: false, waitLeft: 0, phases: [{ target: open, wait: 0 }] });
+    this.playAt(sector, "DSDOROPN");
   }
 
   private lift(sector: number): void {
@@ -156,6 +176,7 @@ export class MapState {
     const low = this.lowestNeighborFloor(sector);
     if (low >= top) return; // nothing to lower to
     this.movers.set(sector, { sector, field: "floorHeight", speed: LIFT_SPEED, idx: 0, waiting: false, waitLeft: 0, phases: [{ target: low, wait: LIFT_WAIT }, { target: top, wait: 0 }] });
+    this.playAt(sector, "DSPSTART");
   }
 
   private floorLowerToLowest(sector: number): void {

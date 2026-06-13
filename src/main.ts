@@ -6,9 +6,10 @@ import { blocked, distSqPointSeg } from "./game/collision";
 import { MapState, USABLE, WALKOVER } from "./game/specials";
 import { Blockmap } from "./game/blockmap";
 import { GameState } from "./game/state";
-import { updateEntities, hasSight } from "./game/ai";
+import { updateEntities, hasSight, monsterSound } from "./game/ai";
 import { fireHitscan } from "./game/combat";
 import { applyPickup } from "./game/items";
+import { SoundSystem } from "./audio/sound";
 import { loadPalettes, paletteRGBA, buildLitPalette } from "./wad/graphics";
 import { TextureLib } from "./wad/textures";
 import { SpriteLib } from "./wad/sprites";
@@ -153,6 +154,10 @@ async function main() {
   const weaponCanvas = $("weapon") as HTMLCanvasElement;
   const weapon = new WeaponHUD(weaponCanvas, wad, basePalette);
 
+  // Audio: SFX for combat / doors / monsters / pickups.
+  const sound = new SoundSystem(wad);
+  mapState.onSound = (name, x, y) => sound.play(name, x, y);
+
   // Camera at player-1 start, eye height above the floor it stands on.
   const p1 = map.things.find((t) => t.type === 1);
   const startX = p1 ? p1.x : 0;
@@ -172,6 +177,7 @@ async function main() {
   // Hide the title only once lock is actually granted (pointerlockchange), so a
   // denied lock leaves the title up to retry rather than stranding the player.
   function enter(): void {
+    sound.resume(); // user gesture — unlock the AudioContext
     void canvas.requestPointerLock();
   }
   elCta.addEventListener("click", enter);
@@ -203,7 +209,7 @@ async function main() {
     if (playing()) cam.onMouse(e.movementX, e.movementY);
   });
 
-  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, updateEntities, fireHitscan, hasSight, applyPickup, weapon };
+  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound };
 
   // "Use" (spacebar): trigger the nearest usable line ~52 units in front.
   function doUse(): void {
@@ -271,7 +277,9 @@ async function main() {
     fireCd = 0.16;
     state.player.ammo.bul--;
     weapon.onFire();
-    fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.yaw);
+    sound.play("DSPISTOL");
+    const hit = fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.yaw);
+    if (hit) sound.play(monsterSound(hit.sprite4, hit.mstate === "dead" ? "death" : "pain"), hit.x, hit.y);
   }
 
   // Pick up items the player walks over (item disappears via active=false).
@@ -280,7 +288,7 @@ async function main() {
     for (const e of state.entities) {
       if (e.kind !== "item" || !e.active) continue;
       if (Math.hypot(e.x - px, e.y - py) < e.radius + 16) {
-        if (applyPickup(state.player, e.type)) e.active = false;
+        if (applyPickup(state.player, e.type)) { e.active = false; sound.play("DSITEMUP"); }
       }
     }
   }
@@ -291,7 +299,10 @@ async function main() {
       state.player.health = 0;
       state.player.dead = true;
       respawnTimer = 2.5;
+      sound.play("DSPLDETH");
       showMessage("YOU DIED", "#ff5555");
+    } else {
+      sound.play("DSPLPAIN");
     }
   }
   function respawn(): void {
@@ -321,10 +332,14 @@ async function main() {
     mapState.update(dt);
 
     // Combat timers, monster AI, pickups, respawn.
+    sound.setListener(cam.pos[0], -cam.pos[2], cam.yaw);
     fireCd -= dt;
     if (state.player.dead) { respawnTimer -= dt; if (respawnTimer <= 0) respawn(); }
     else checkPickups();
-    updateEntities(state.entities, dt, { map, blockmap, px: cam.pos[0], py: -cam.pos[2], damagePlayer });
+    updateEntities(state.entities, dt, {
+      map, blockmap, px: cam.pos[0], py: -cam.pos[2], damagePlayer,
+      playSound: (name, x, y) => sound.play(name, x, y),
+    });
   }
 
   function render(now: number) {
