@@ -62,22 +62,24 @@ export class WeaponHUD {
     if (!this.ready) return;
 
     if (moving) this.bob += dt * 9;
-    const bobX = Math.sin(this.bob) * 0.012 * W;
-    const bobY = Math.abs(Math.sin(this.bob)) * 0.018 * H;
+    const bobX = Math.sin(this.bob) * 0.008 * W;
+    const bobY = Math.abs(Math.sin(this.bob)) * 0.013 * H;
 
     this.flashTimer -= dt;
     const firing = this.flashTimer > 0;
     const gun = (firing && this.fire) ? this.fire : this.ready;
 
-    const scale = (H / 200) * 1.6;
-    const gunX = W / 2 - (gun.w / 2) * scale + bobX;
+    // Doom positions weapons by their offsets so the aim point is screen-centre:
+    // sprite left edge = centre + (-160 - leftOffset)*scale. Vertical bottom-anchored.
+    const scale = (H / 200) * 1.5;
+    const gunX = W / 2 + (-160 - gun.lo) * scale + bobX;
     const gunY = H - gun.h * scale + bobY;
     c.drawImage(gun.canvas, gunX, gunY, gun.w * scale, gun.h * scale);
 
     if (firing && this.flash) {
-      // Align the flash to the muzzle via the gun/flash offset difference.
-      const fx = gunX + ((this.ready.lo - this.flash.lo)) * scale;
-      const fy = gunY + ((this.ready.to - this.flash.to)) * scale;
+      // Flash placed relative to the gun by the offset difference → lands on the barrel.
+      const fx = gunX + (gun.lo - this.flash.lo) * scale;
+      const fy = gunY + (gun.to - this.flash.to) * scale;
       c.drawImage(this.flash.canvas, fx, fy, this.flash.w * scale, this.flash.h * scale);
     }
   }
