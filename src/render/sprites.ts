@@ -251,17 +251,12 @@ export class SpriteRenderer {
     this.litTex.destroy();
   }
 
-  render(encoder: GPUCommandEncoder, colorView: GPUTextureView, depthView: GPUTextureView): void {
+  /** Record the sprite draw into an already-open render pass (shared with world/sky). */
+  draw(pass: GPURenderPassEncoder): void {
     if (this.instanceCount === 0) return;
-    const pass = encoder.beginRenderPass({
-      label: "sprites",
-      colorAttachments: [{ view: colorView, loadOp: "load", storeOp: "store" }],
-      depthStencilAttachment: { view: depthView, depthLoadOp: "load", depthStoreOp: "store" },
-    });
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.frameBG);
     pass.setBindGroup(1, this.dataBG);
     pass.draw(6, this.instanceCount);
-    pass.end();
   }
 }

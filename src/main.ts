@@ -256,7 +256,7 @@ async function main() {
     if (!playing()) return;
     if (e.code === "KeyM") { mode = mode === "world" ? "automap" : "world"; return; }
     if (e.code === "KeyF") { moveMode = moveMode === "walk" ? "fly" : "walk"; cam.vz = 0; return; }
-    if (e.code === "Space") { e.preventDefault(); doUse(); return; }
+    if (e.code === "Space") { e.preventDefault(); useQueued = true; return; }
     cam.onKey(e.code, true);
   });
   addEventListener("keyup", (e) => cam.onKey(e.code, false));
@@ -324,7 +324,12 @@ async function main() {
   }
 
   // Combat + player health/death/respawn.
+  // Fire/use are edge-latched by the DOM handlers and consumed inside the fixed
+  // sim tick, so combat mutates state deterministically at tick boundaries and
+  // reads tick-stable camera position — not mid-interpolation on the event thread.
   let fireCd = 0;
+  let fireQueued = false;
+  let useQueued = false;
   let respawnTimer = 0;
   function fire(): void {
     if (fireCd > 0 || state.player.dead || mode !== "world") return;
@@ -368,7 +373,7 @@ async function main() {
     for (const e of state.entities) if (e.kind === "monster") e.mstate = "idle";
     hideMessage();
   }
-  addEventListener("mousedown", (e) => { if (playing() && e.button === 0) fire(); });
+  addEventListener("mousedown", (e) => { if (playing() && e.button === 0) fireQueued = true; });
 
   let lastW = 0, lastH = 0;
   let prev = performance.now();
@@ -404,6 +409,9 @@ async function main() {
     // Combat timers, monster AI, pickups, respawn.
     sound.setListener(cam.pos[0], -cam.pos[2], cam.yaw);
     fireCd -= dt;
+    // Consume edge-latched player actions at the tick boundary (post-move).
+    if (useQueued) { useQueued = false; doUse(); }
+    if (fireQueued) { fireQueued = false; fire(); }
     if (state.player.dead) { respawnTimer -= dt; if (respawnTimer <= 0) respawn(); }
     else checkPickups();
     updateEntities(state.entities, dt, {
@@ -463,29 +471,41 @@ async function main() {
     if (mode === "world") {
       const vp = cam.viewProjAt(eye, aspect);
       world.setFrame(vp, eye);
-      world.render(encoder, colorView, w, h);
-      // Sprites after world (depth-tested + writing), before sky.
       const camRight: [number, number, number] = [Math.cos(cam.yaw), 0, Math.sin(cam.yaw)];
       sprites.setFrame(vp, eye, camRight);
-      sprites.render(encoder, colorView, world.depthView());
-      if (sky.skyId >= 0) {
-        sky.setFrame(invert(vp), eye);
-        sky.render(encoder, colorView, world.depthView());
-      }
+      const drawSky = sky.skyId >= 0;
+      if (drawSky) sky.setFrame(invert(vp), eye);
+
+      // One render pass for world + sprites + sky. The MSAA color is resolved
+      // into the swapchain on store (storeOp "discard" is correct here — the
+      // multisample texture isn't needed after the resolve). Collapsing the three
+      // draws into a single pass avoids two tile color+depth reloads per frame.
+      const pass = encoder.beginRenderPass({
+        label: "world",
+        colorAttachments: [
+          { view: colorView, resolveTarget: swapView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "discard" },
+        ],
+        depthStencilAttachment: {
+          view: world.depthView(w, h),
+          depthClearValue: 1.0,
+          depthLoadOp: "clear",
+          depthStoreOp: "discard",
+        },
+      });
+      world.draw(pass);          // opaque geometry, writes depth
+      sprites.draw(pass);        // alpha-tested billboards, depth-tested + writing
+      if (drawSky) sky.draw(pass); // fills untouched depth==1.0 pixels last
+      pass.end();
     } else {
       const pass = encoder.beginRenderPass({
         label: "automap",
-        colorAttachments: [{ view: colorView, clearValue: { r: 0.06, g: 0.01, b: 0.02, a: 1 }, loadOp: "clear", storeOp: "store" }],
+        colorAttachments: [
+          { view: colorView, resolveTarget: swapView, clearValue: { r: 0.06, g: 0.01, b: 0.02, a: 1 }, loadOp: "clear", storeOp: "discard" },
+        ],
       });
       wireframe.draw(pass);
       pass.end();
     }
-
-    // Resolve the MSAA color into the swapchain.
-    encoder.beginRenderPass({
-      label: "resolve",
-      colorAttachments: [{ view: colorView, resolveTarget: swapView, loadOp: "load", storeOp: "discard" }],
-    }).end();
 
     gpu.device.queue.submit([encoder.finish()]);
 

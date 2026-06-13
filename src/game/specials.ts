@@ -108,9 +108,10 @@ export class MapState {
       case 1: case 26: case 31: return this.manualDoor(ld.left, DOOR_SPEED);
       case 117: return this.manualDoor(ld.left, BLAZE_SPEED);
       case 11: this.onExit?.(); return true;
-      case 62: case 61: return this.taggedOnce(false, ld.tag, (s) => this.lift(s)); // SR
-      case 103: case 63: return this.taggedOnce(false, ld.tag, (s) => this.openDoorStay(s));
-      case 23: case 29: case 42: return this.taggedOnce(this.once(lineIdx), ld.tag, (s) => this.floorLowerToLowest(s));
+      case 62: case 61: return this.tagged(ld.tag, (s) => this.lift(s)); // SR (repeatable)
+      case 103: case 63: return this.tagged(ld.tag, (s) => this.openDoorStay(s)); // SR (repeatable)
+      case 23: case 29: case 42: // S1 floor-lower (single use)
+        return this.triggerOnce(lineIdx, () => this.tagged(ld.tag, (s) => this.floorLowerToLowest(s)));
       default: return false;
     }
   }
@@ -119,21 +120,21 @@ export class MapState {
   crossLine(lineIdx: number): void {
     const ld = this.map.linedefs[lineIdx]!;
     switch (ld.special) {
-      case 2: case 86: case 109: if (this.once(lineIdx)) this.tagged(ld.tag, (s) => this.openDoorStay(s)); break;
+      case 2: case 86: case 109: this.triggerOnce(lineIdx, () => this.tagged(ld.tag, (s) => this.openDoorStay(s))); break;
       case 88: case 90: this.tagged(ld.tag, (s) => this.lift(s)); break; // WR repeatable
-      case 4: case 10: case 16: if (this.once(lineIdx)) this.tagged(ld.tag, (s) => this.lift(s)); break;
+      case 4: case 10: case 16: this.triggerOnce(lineIdx, () => this.tagged(ld.tag, (s) => this.lift(s))); break;
     }
   }
 
-  private once(lineIdx: number): boolean {
+  /**
+   * Run a one-shot line action. The trigger is only marked spent when the action
+   * actually fires — so bumping a switch whose target is busy (or tag-less) doesn't
+   * permanently burn the line (the classic single-use-switch softlock).
+   */
+  private triggerOnce(lineIdx: number, action: () => boolean): boolean {
     if (this.triggered.has(lineIdx)) return false;
-    this.triggered.add(lineIdx);
-    return true;
-  }
-
-  private taggedOnce(consumed: boolean, tag: number, fn: (s: number) => void): boolean {
-    if (consumed) return false;
-    return this.tagged(tag, fn);
+    if (action()) { this.triggered.add(lineIdx); return true; }
+    return false;
   }
 
   private tagged(tag: number, fn: (s: number) => void): boolean {

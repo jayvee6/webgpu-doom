@@ -5,10 +5,10 @@
  * (sector*2 + 0=floor / 1=ceil). Updating that small buffer animates all walls +
  * flats touching a sector for free — no mesh rebuild.
  *
- * Vertex (9 f32, 36-byte stride):
- *   a: vec3f = (x, z, heightIndex)
- *   b: vec2f = (u, vBase)
- *   c: vec4f = (vTop, vMode, light, texId)
+ * Vertex (10 f32, 40-byte stride):
+ *   a: vec4f = (x, z, heightIndex, lightSector)
+ *   b: vec3f = (u, vBase, vTop)
+ *   c: vec3f = (vMode, contrast, texId)
  * V coord: flat (vMode 0) → vBase; wall (vMode 1) → vBase + (vTop - worldY).
  */
 
@@ -91,6 +91,7 @@ export class World {
   private readonly ibuf: GPUBuffer;
   private readonly indexCount: number;
   private depth: GPUTexture | null = null;
+  private depthViewCached: GPUTextureView | null = null;
   private depthW = 0;
   private depthH = 0;
 
@@ -179,7 +180,12 @@ export class World {
     this.device.queue.writeBuffer(this.slbuf, 0, lights);
   }
 
-  private ensureDepth(w: number, h: number): GPUTextureView {
+  /**
+   * Ensure the MSAA depth texture matches (w,h), recreating it on resize.
+   * The view is cached and only rebuilt when the texture is — callers may invoke
+   * this every frame without churning GPUTextureView allocations.
+   */
+  depthView(w: number, h: number): GPUTextureView {
     if (!this.depth || this.depthW !== w || this.depthH !== h) {
       this.depth?.destroy();
       this.depth = this.device.createTexture({
@@ -189,40 +195,25 @@ export class World {
         sampleCount: SAMPLES,
         usage: GPUTextureUsage.RENDER_ATTACHMENT,
       });
+      this.depthViewCached = this.depth.createView();
       this.depthW = w;
       this.depthH = h;
     }
-    return this.depth.createView();
+    return this.depthViewCached!;
   }
 
-  render(encoder: GPUCommandEncoder, colorView: GPUTextureView, w: number, h: number): void {
-    const pass = encoder.beginRenderPass({
-      label: "world",
-      colorAttachments: [
-        { view: colorView, clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1 }, loadOp: "clear", storeOp: "store" },
-      ],
-      depthStencilAttachment: {
-        view: this.ensureDepth(w, h),
-        depthClearValue: 1.0,
-        depthLoadOp: "clear",
-        depthStoreOp: "store",
-      },
-    });
+  /** Record the world draw into an already-open render pass (shared with sprites/sky). */
+  draw(pass: GPURenderPassEncoder): void {
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.frameBG);
     pass.setBindGroup(1, this.atlasBG);
     pass.setVertexBuffer(0, this.vbuf);
     pass.setIndexBuffer(this.ibuf, "uint32");
     pass.drawIndexed(this.indexCount);
-    pass.end();
   }
 
   get count(): number {
     return this.indexCount;
-  }
-
-  depthView(): GPUTextureView {
-    return this.ensureDepth(this.depthW, this.depthH);
   }
 
   dispose(): void {

@@ -100,17 +100,11 @@ export class Sky {
     this.device.queue.writeBuffer(this.ubuf, 0, buf);
   }
 
-  /** Draw into the existing color + depth (loaded, not cleared). */
-  render(encoder: GPUCommandEncoder, colorView: GPUTextureView, depthView: GPUTextureView): void {
-    const pass = encoder.beginRenderPass({
-      label: "sky",
-      colorAttachments: [{ view: colorView, loadOp: "load", storeOp: "store" }],
-      depthStencilAttachment: { view: depthView, depthLoadOp: "load", depthStoreOp: "store" },
-    });
+  /** Record the sky draw into an already-open render pass (shared with world/sprites). */
+  draw(pass: GPURenderPassEncoder): void {
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.skyBG);
     pass.setBindGroup(1, this.atlasBG);
     pass.draw(3);
-    pass.end();
   }
 }
