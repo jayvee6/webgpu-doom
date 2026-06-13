@@ -35,6 +35,30 @@ export class SpriteLib {
     }
   }
 
+  /** Does a specific sprite+frame+rotation lump exist? */
+  hasFrameRot(sprite: string, frame: string, rot: string): boolean {
+    return this.names.has(sprite + frame + rot);
+  }
+
+  /**
+   * Data-driven animation frames for a monster sprite (no hardcoded state table):
+   *   walk  = directional frames A..D (have a rotation-1 variant)
+   *   death = rotation-0-ONLY frames after D, alphabetical (the death/corpse run)
+   */
+  monsterFrames(sprite: string): { walk: string[]; death: string[] } {
+    const walk: string[] = [];
+    for (const f of ["A", "B", "C", "D"]) {
+      if (this.hasFrameRot(sprite, f, "1") || this.hasFrameRot(sprite, f, "0")) walk.push(f);
+    }
+    const death: string[] = [];
+    for (let c = "E".charCodeAt(0); c <= "P".charCodeAt(0); c++) {
+      const f = String.fromCharCode(c);
+      if (this.hasFrameRot(sprite, f, "0") && !this.hasFrameRot(sprite, f, "1")) death.push(f);
+    }
+    if (walk.length === 0) walk.push("A");
+    return { walk, death };
+  }
+
   /** Resolve sprite+frame to a concrete lump name (front-facing), or null. */
   resolveLump(sprite: string, frame: string): string | null {
     const base = sprite + frame;

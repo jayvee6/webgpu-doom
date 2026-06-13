@@ -6,6 +6,8 @@ import { blocked, distSqPointSeg } from "./game/collision";
 import { MapState, USABLE, WALKOVER } from "./game/specials";
 import { Blockmap } from "./game/blockmap";
 import { GameState } from "./game/state";
+import { updateEntities, hasSight } from "./game/ai";
+import { fireHitscan } from "./game/combat";
 import { loadPalettes, paletteRGBA, buildLitPalette } from "./wad/graphics";
 import { TextureLib } from "./wad/textures";
 import { SpriteLib } from "./wad/sprites";
@@ -52,6 +54,23 @@ function segsCross(x1: number, y1: number, x2: number, y2: number, x3: number, y
 const WALK_SPEED = 300;
 const RUN_SPEED = 500;
 const GRAVITY = 1800;
+
+// Transient centered gameplay message (YOU DIED / LEVEL COMPLETE).
+let msgEl: HTMLDivElement | null = null;
+function showMessage(text: string, color: string): void {
+  if (!msgEl) {
+    msgEl = document.createElement("div");
+    msgEl.style.cssText = "position:fixed;inset:0;display:grid;place-items:center;z-index:9;pointer-events:none;" +
+      "font:800 clamp(34px,7vw,72px)/1 ui-monospace,monospace;letter-spacing:.1em;text-shadow:0 0 16px currentColor";
+    document.body.appendChild(msgEl);
+  }
+  msgEl.style.color = color;
+  msgEl.style.display = "grid";
+  msgEl.textContent = text;
+}
+function hideMessage(): void {
+  if (msgEl) msgEl.style.display = "none";
+}
 
 async function main() {
   const canvas = document.getElementById("gfx") as HTMLCanvasElement;
@@ -125,6 +144,8 @@ async function main() {
     (atlas.missing.length ? ` (${atlas.missing.slice(0, 12).join(", ")}${atlas.missing.length > 12 ? "…" : ""})` : ""));
   console.log(`geometry: ${mesh.length / 9} verts, ${indices.length} indices (${indices.length / 3} tris); ${flats.failedSectors} sectors failed`);
   console.log(`entities: ${state.entities.length} (${state.unmappedTypes} unmapped types, ${sprites.missing.length} missing sprite lumps)`);
+  const monsterTotal = state.entities.filter((e) => e.kind === "monster").length;
+  const aliveMonsters = () => state.entities.reduce((n, e) => n + (e.kind === "monster" && e.mstate !== "dead" ? 1 : 0), 0);
 
   // Camera at player-1 start, eye height above the floor it stands on.
   const p1 = map.things.find((t) => t.type === 1);
@@ -176,7 +197,7 @@ async function main() {
     if (playing()) cam.onMouse(e.movementX, e.movementY);
   });
 
-  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap };
+  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, updateEntities, fireHitscan, hasSight };
 
   // "Use" (spacebar): trigger the nearest usable line ~52 units in front.
   function doUse(): void {
@@ -235,6 +256,34 @@ async function main() {
     if (cam.pos[1] > headMax) { cam.pos[1] = headMax; if (cam.vz > 0) cam.vz = 0; }
   }
 
+  // Combat + player health/death/respawn.
+  let fireCd = 0;
+  let respawnTimer = 0;
+  function fire(): void {
+    if (fireCd > 0 || state.player.dead || mode !== "world") return;
+    fireCd = 0.16;
+    fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.yaw);
+  }
+  function damagePlayer(amount: number): void {
+    if (state.player.dead) return;
+    state.player.health -= amount;
+    if (state.player.health <= 0) {
+      state.player.health = 0;
+      state.player.dead = true;
+      respawnTimer = 2.5;
+      showMessage("YOU DIED", "#ff5555");
+    }
+  }
+  function respawn(): void {
+    state.player.health = 100;
+    state.player.dead = false;
+    cam.pos[0] = startPos[0]; cam.pos[1] = startPos[1]; cam.pos[2] = startPos[2];
+    cam.vz = 0;
+    for (const e of state.entities) if (e.kind === "monster") e.mstate = "idle";
+    hideMessage();
+  }
+  addEventListener("mousedown", (e) => { if (playing() && e.button === 0) fire(); });
+
   let lastW = 0, lastH = 0;
   let prev = performance.now();
   let frame = 0, fps = 0, fpsT = prev, fpsN = 0;
@@ -250,6 +299,11 @@ async function main() {
     if (moveMode === "fly") cam.update(dt);
     else walkStep(dt);
     mapState.update(dt);
+
+    // Combat timers, monster AI, respawn.
+    fireCd -= dt;
+    if (state.player.dead) { respawnTimer -= dt; if (respawnTimer <= 0) respawn(); }
+    updateEntities(state.entities, dt, { map, blockmap, px: cam.pos[0], py: -cam.pos[2], damagePlayer });
   }
 
   function render(now: number) {
@@ -314,9 +368,9 @@ async function main() {
     frame++; fpsN++;
     if (now - fpsT >= 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
     hud.textContent =
-      `webgpu-doom — P2 entities   [${mode} · ${moveMode}]  (Space: use · M: map · F: fly · WASD)\n` +
-      `${map.name}  ${state.entities.length} ents  ·  ${sprites.instanceCount} drawn  ·  ${fps} fps\n` +
-      `pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°  pitch ${((cam.pitch * 180) / Math.PI).toFixed(0)}°`;
+      `webgpu-doom — P3 combat   [${mode} · ${moveMode}]  (CLICK fire · Space use · M map · F fly · WASD)\n` +
+      `HEALTH ${state.player.health}   ·   monsters ${aliveMonsters()}/${monsterTotal}   ·   ${fps} fps\n` +
+      `${map.name}  pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);
   }
 
