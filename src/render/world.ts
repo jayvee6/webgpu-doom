@@ -28,10 +28,21 @@ struct Frame { vp : mat4x4f, camPos : vec3f, _pad : f32 };
 struct VSOut {
   @builtin(position) clip : vec4f,
   @location(0) uv : vec2f,
-  @location(1) light : f32,
+  @location(1) @interpolate(flat) light : f32,
   @location(2) @interpolate(flat) texId : u32,
   @location(3) world : vec3f,
 };
+
+// Doom light level → lit-palette row (0 bright → 31 dark) with distance diminishing.
+// Bright sectors (light≈1) sit near row 0 and barely fade; dim sectors darken with
+// range. Near surfaces brighten toward the sector's startmap; far recede to it.
+fn lightRow(light : f32, dist : f32) -> u32 {
+  let li = floor(clamp(light, 0.0, 1.0) * 15.999);   // 0..15 light level
+  let startmap = (15.0 - li) * 4.0;                    // 0..60
+  let scale = 2400.0 / max(dist, 16.0);               // near → big → brighter
+  let level = clamp(startmap - scale, 0.0, 31.0);
+  return u32(level);
+}
 
 @vertex
 fn vs(@location(0) a : vec3f, @location(1) b : vec2f, @location(2) c : vec4f) -> VSOut {
@@ -57,11 +68,10 @@ fn fs(in : VSOut) -> @location(0) vec4f {
   let vv = in.uv.y - floor(in.uv.y / h) * h;
   let coord = vec2u(r.x + u32(uu), r.y + u32(vv));
   let palIdx = textureLoad(atlasTex, coord, 0).r;
-  let rgb = textureLoad(palette, vec2u(palIdx, 0u), 0).rgb;
   let dist = length(in.world - frame.camPos);
-  let reach = mix(700.0, 2200.0, in.light);
-  let fog = clamp(1.0 - max(dist - 224.0, 0.0) / reach, 0.22, 1.0);
-  return vec4f(rgb * in.light * fog, 1.0);
+  let row = lightRow(in.light, dist);
+  // Single lit-palette lookup: palette index remapped through the colormap row.
+  return textureLoad(palette, vec2u(palIdx, row), 0);
 }
 `;
 

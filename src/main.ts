@@ -4,7 +4,7 @@ import { loadMap } from "./wad/maps";
 import { locateSector } from "./wad/bsp";
 import { blocked, distSqPointSeg } from "./game/collision";
 import { MapState, USABLE, WALKOVER } from "./game/specials";
-import { loadPalettes, paletteRGBA } from "./wad/graphics";
+import { loadPalettes, paletteRGBA, buildLitPalette } from "./wad/graphics";
 import { TextureLib } from "./wad/textures";
 import { SpriteLib } from "./wad/sprites";
 import { thingSprite } from "./wad/thingtypes";
@@ -71,6 +71,7 @@ async function main() {
 
   const palettes = loadPalettes(wad);
   const basePalette = paletteRGBA(palettes, 0);
+  const litPalette = buildLitPalette(wad, palettes); // 256×32 palette × colormap LUT
   const map = loadMap(wad, FIRST_MAP);
 
   // Textures: collect every wall texture + flat the map references, then atlas them.
@@ -83,7 +84,7 @@ async function main() {
   const SKY_TEX = "SKY1"; // E1 sky texture; packed so the sky pass can sample it
   if (texLib.texture(SKY_TEX)) usedNames.add(SKY_TEX);
   const names = [...usedNames];
-  const atlas = new TextureAtlas(gpu.device, texLib, basePalette, names);
+  const atlas = new TextureAtlas(gpu.device, texLib, litPalette, names);
   const tid = (name: string) => atlas.id(name);
   const sky = new Sky(gpu.device, gpu.format, atlas, atlas.id(SKY_TEX));
 
@@ -112,7 +113,7 @@ async function main() {
   world.setHeights(mapState.heights());
 
   // Sprites (THINGS): resolve each thing's spawn sprite → billboard request.
-  const spriteLib = new SpriteLib(wad, basePalette);
+  const spriteLib = new SpriteLib(wad);
   const requests: SpriteRequest[] = [];
   let unmappedTypes = 0;
   for (const t of map.things) {
@@ -125,7 +126,7 @@ async function main() {
     const light = sec >= 0 ? map.sectors[sec]!.light / 255 : 1;
     requests.push({ lump, x: t.x, y: t.y, floor, light });
   }
-  const sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, requests);
+  const sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, requests, litPalette);
   console.log(`textures: ${names.length} names, atlas 2048×${atlas.atlasHeight}, ${atlas.missing.length} missing` +
     (atlas.missing.length ? ` (${atlas.missing.slice(0, 12).join(", ")}${atlas.missing.length > 12 ? "…" : ""})` : ""));
   console.log(`geometry: ${walls.vertexCount} wall-verts + ${flats.vertexCount} flat-verts; ${flats.failedSectors} sectors failed triangulation`);

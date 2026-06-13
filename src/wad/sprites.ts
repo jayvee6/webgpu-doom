@@ -2,9 +2,9 @@
  * Sprite lumps live between S_START/S_END. Names are SPRITE(4) + FRAME(1) +
  * ROTATION(1), optionally with a second FRAME+ROTATION for a mirrored rotation
  * (e.g. TROOA2A8). For a static billboard we want a front-facing view: prefer
- * rotation '0' (angle-independent), else rotation '1'. Decoded to RGBA via the
- * palette, with the patch's transparency mask → alpha (sprite gaps are NOT
- * palette index 0).
+ * rotation '0' (angle-independent), else rotation '1'. Kept as palette index +
+ * transparency mask (sprite gaps are NOT palette index 0) so the shader applies
+ * the same COLORMAP lighting as the world. Packed RG8: R=index, G=mask(0/255).
  */
 
 import { Wad } from "./reader";
@@ -15,18 +15,17 @@ export interface SpriteImage {
   height: number;
   leftOffset: number;
   topOffset: number;
-  rgba: Uint8Array<ArrayBuffer>;
+  /** RG8: byte 0 = palette index, byte 1 = mask (255 painted / 0 transparent). */
+  rg: Uint8Array<ArrayBuffer>;
 }
 
 export class SpriteLib {
   private readonly wad: Wad;
-  private readonly palette: Uint8Array; // 1024 bytes RGBA
   private readonly names = new Set<string>();
   private readonly cache = new Map<string, SpriteImage | null>();
 
-  constructor(wad: Wad, paletteRGBA: Uint8Array) {
+  constructor(wad: Wad) {
     this.wad = wad;
-    this.palette = paletteRGBA;
     const start = wad.indexOf("S_START");
     const end = wad.indexOf("S_END");
     if (start < 0 || end < 0) return;
@@ -48,7 +47,7 @@ export class SpriteLib {
     return null;
   }
 
-  /** Decode a sprite lump to RGBA (cached). */
+  /** Decode a sprite lump to packed index+mask RG8 (cached). */
   image(lumpName: string): SpriteImage | null {
     const cached = this.cache.get(lumpName);
     if (cached !== undefined) return cached;
@@ -56,17 +55,14 @@ export class SpriteLib {
     if (idx < 0) { this.cache.set(lumpName, null); return null; }
     const p = decodePatchFull(this.wad.data(idx));
     if (!p) { this.cache.set(lumpName, null); return null; }
-    const rgba = new Uint8Array(p.width * p.height * 4);
+    const rg = new Uint8Array(p.width * p.height * 2);
     for (let i = 0; i < p.width * p.height; i++) {
       if (p.mask[i]) {
-        const c = p.indices[i]! * 4;
-        rgba[i * 4] = this.palette[c]!;
-        rgba[i * 4 + 1] = this.palette[c + 1]!;
-        rgba[i * 4 + 2] = this.palette[c + 2]!;
-        rgba[i * 4 + 3] = 255;
-      } // else fully transparent (0,0,0,0)
+        rg[i * 2] = p.indices[i]!;
+        rg[i * 2 + 1] = 255;
+      } // else (0,0) = transparent
     }
-    const img: SpriteImage = { width: p.width, height: p.height, leftOffset: p.leftOffset, topOffset: p.topOffset, rgba };
+    const img: SpriteImage = { width: p.width, height: p.height, leftOffset: p.leftOffset, topOffset: p.topOffset, rg };
     this.cache.set(lumpName, img);
     return img;
   }

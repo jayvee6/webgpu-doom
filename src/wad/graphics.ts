@@ -25,6 +25,34 @@ export function loadPalettes(wad: Wad): Palettes {
   return { count, rgb: data.slice() };
 }
 
+/** Number of light-level colormaps used for shading (Doom: 32; 0=bright, 31=dark). */
+export const LIGHT_LEVELS = 32;
+
+/**
+ * Build the "lit palette" LUT: a 256×32 RGBA image where
+ *   lut[row*256 + index] = palette0[ COLORMAP[row][index] ].
+ * Row = light level (0 brightest → 31 darkest). The shader picks a row from
+ * sector light + distance and does ONE lookup — this fuses Doom's palette +
+ * colormap into a single texture and gives the authentic banded diminishing.
+ */
+export function buildLitPalette(wad: Wad, pal: Palettes): Uint8Array<ArrayBuffer> {
+  const colormap = wad.data("COLORMAP"); // 34 × 256 bytes (we use 0..31)
+  const out = new Uint8Array(LIGHT_LEVELS * PALETTE_SIZE * 4);
+  for (let row = 0; row < LIGHT_LEVELS; row++) {
+    const cmBase = row * PALETTE_SIZE;
+    for (let i = 0; i < PALETTE_SIZE; i++) {
+      const mapped = colormap[cmBase + i]!; // remapped palette index at this light
+      const s = mapped * 3;
+      const d = (row * PALETTE_SIZE + i) * 4;
+      out[d] = pal.rgb[s]!;
+      out[d + 1] = pal.rgb[s + 1]!;
+      out[d + 2] = pal.rgb[s + 2]!;
+      out[d + 3] = 255;
+    }
+  }
+  return out;
+}
+
 /** Return palette `index` as RGBA8 (1024 bytes), alpha forced to 255. */
 export function paletteRGBA(pal: Palettes, index = 0): Uint8Array<ArrayBuffer> {
   if (index < 0 || index >= pal.count) throw new Error(`Palette index ${index} out of range (0..${pal.count - 1})`);

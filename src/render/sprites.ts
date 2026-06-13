@@ -31,7 +31,16 @@ struct Inst {
   ox : f32, oy : f32, w : f32, h : f32,
 };
 @group(1) @binding(0) var<storage, read> insts : array<Inst>;
-@group(1) @binding(1) var sprTex : texture_2d<f32>;
+@group(1) @binding(1) var sprTex : texture_2d<u32>;   // RG8: r=palette index, g=mask
+@group(1) @binding(2) var litPalette : texture_2d<f32>; // 256×32 lit palette LUT
+
+fn lightRow(light : f32, dist : f32) -> u32 {
+  let li = floor(clamp(light, 0.0, 1.0) * 15.999);
+  let startmap = (15.0 - li) * 4.0;
+  let scale = 2400.0 / max(dist, 16.0);
+  let level = clamp(startmap - scale, 0.0, 31.0);
+  return u32(level);
+}
 
 struct VSOut {
   @builtin(position) clip : vec4f,
@@ -69,11 +78,10 @@ fn fs(in : VSOut) -> @location(0) vec4f {
   let tx = u32(clamp(in.uv.x, 0.0, in.rect.z - 1.0));
   let ty = u32(clamp(in.uv.y, 0.0, in.rect.w - 1.0));
   let texel = textureLoad(sprTex, vec2u(u32(in.rect.x) + tx, u32(in.rect.y) + ty), 0);
-  if (texel.a < 0.5) { discard; }
+  if (texel.g < 128u) { discard; } // mask = transparent
   let dist = length(in.world - frame.camPos);
-  let reach = mix(700.0, 2200.0, in.light);
-  let fog = clamp(1.0 - max(dist - 224.0, 0.0) / reach, 0.22, 1.0);
-  return vec4f(texel.rgb * in.light * fog, 1.0);
+  let row = lightRow(in.light, dist);
+  return textureLoad(litPalette, vec2u(texel.r, row), 0);
 }
 `;
 
@@ -87,10 +95,10 @@ export class SpriteRenderer {
   readonly atlasHeight: number;
   readonly missing: string[] = [];
 
-  constructor(device: GPUDevice, format: GPUTextureFormat, lib: SpriteLib, requests: SpriteRequest[]) {
+  constructor(device: GPUDevice, format: GPUTextureFormat, lib: SpriteLib, requests: SpriteRequest[], litPalette: Uint8Array<ArrayBuffer>) {
     this.device = device;
 
-    // Decode unique sprite lumps and shelf-pack into an RGBA atlas.
+    // Decode unique sprite lumps and shelf-pack into the RG8 index+mask atlas.
     const images = new Map<string, SpriteImage>();
     for (const r of requests) {
       if (images.has(r.lump)) continue;
@@ -113,24 +121,34 @@ export class SpriteRenderer {
     const atlasH = Math.max(1, y + shelfH);
     this.atlasHeight = atlasH;
 
-    const atlas = new Uint8Array(ATLAS_W * atlasH * 4);
+    // RG8 atlas: R = palette index, G = mask.
+    const atlas = new Uint8Array(ATLAS_W * atlasH * 2);
     for (const lump of lumps) {
       const img = images.get(lump)!;
       const [ox, oy] = origin.get(lump)!;
       const w = Math.min(img.width, ATLAS_W);
       for (let row = 0; row < img.height; row++) {
-        const src = row * img.width * 4;
-        const dst = ((oy + row) * ATLAS_W + ox) * 4;
-        atlas.set(img.rgba.subarray(src, src + w * 4), dst);
+        const src = row * img.width * 2;
+        const dst = ((oy + row) * ATLAS_W + ox) * 2;
+        atlas.set(img.rg.subarray(src, src + w * 2), dst);
       }
     }
     const atlasTex = device.createTexture({
       label: "sprite-atlas",
       size: { width: ATLAS_W, height: atlasH },
+      format: "rg8uint",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture({ texture: atlasTex }, atlas, { bytesPerRow: ATLAS_W * 2, rowsPerImage: atlasH }, { width: ATLAS_W, height: atlasH });
+
+    // Shared lit-palette LUT (256×32) — same as the world's.
+    const litTex = device.createTexture({
+      label: "sprite-lit-palette",
+      size: { width: 256, height: 32 },
       format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
-    device.queue.writeTexture({ texture: atlasTex }, atlas, { bytesPerRow: ATLAS_W * 4, rowsPerImage: atlasH }, { width: ATLAS_W, height: atlasH });
+    device.queue.writeTexture({ texture: litTex }, litPalette, { bytesPerRow: 256 * 4, rowsPerImage: 32 }, { width: 256, height: 32 });
 
     // Build instances (skip requests whose sprite was missing).
     const insts: number[] = [];
@@ -163,7 +181,8 @@ export class SpriteRenderer {
       label: "sprite-data-bgl",
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "uint", viewDimension: "2d" } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } },
       ],
     });
     this.frameBG = device.createBindGroup({ label: "sprite-frame-bg", layout: frameBGL, entries: [{ binding: 0, resource: { buffer: this.ubuf } }] });
@@ -173,6 +192,7 @@ export class SpriteRenderer {
       entries: [
         { binding: 0, resource: { buffer: instBuf } },
         { binding: 1, resource: atlasTex.createView() },
+        { binding: 2, resource: litTex.createView() },
       ],
     });
 

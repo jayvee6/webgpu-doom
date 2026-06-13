@@ -21,7 +21,7 @@ export class TextureAtlas {
     return this.ids.get(name) ?? -1;
   }
 
-  constructor(device: GPUDevice, lib: TextureLib, paletteRGBA: Uint8Array<ArrayBuffer>, names: string[]) {
+  constructor(device: GPUDevice, lib: TextureLib, litPalette: Uint8Array<ArrayBuffer>, names: string[]) {
     // Resolve each name to an image (fallback 2×2 if missing).
     const fallback: IndexedImage = { width: 2, height: 2, indices: new Uint8Array([0, 0, 0, 0]) };
     const images: IndexedImage[] = [];
@@ -71,13 +71,14 @@ export class TextureAtlas {
     });
     device.queue.writeTexture({ texture: atlasTex }, atlas, { bytesPerRow: ATLAS_W, rowsPerImage: atlasH }, { width: ATLAS_W, height: atlasH });
 
+    // Lit-palette LUT: 256 wide × 32 light levels (row 0 bright → 31 dark).
     const paletteTex = device.createTexture({
-      label: "palette",
-      size: { width: 256, height: 1 },
+      label: "lit-palette",
+      size: { width: 256, height: 32 },
       format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
-    device.queue.writeTexture({ texture: paletteTex }, paletteRGBA, { bytesPerRow: 256 * 4, rowsPerImage: 1 }, { width: 256, height: 1 });
+    device.queue.writeTexture({ texture: paletteTex }, litPalette, { bytesPerRow: 256 * 4, rowsPerImage: 32 }, { width: 256, height: 32 });
 
     // rects[id] = vec4u(originX, originY, width, height)
     const rects = new Uint32Array(images.length * 4);
