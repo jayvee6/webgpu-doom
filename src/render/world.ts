@@ -11,7 +11,7 @@ import type { TextureAtlas } from "./atlas";
 const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
 
 const WGSL = /* wgsl */ `
-struct Frame { vp : mat4x4f };
+struct Frame { vp : mat4x4f, camPos : vec3f, _pad : f32 };
 @group(0) @binding(0) var<uniform> frame : Frame;
 
 @group(1) @binding(0) var atlasTex : texture_2d<u32>;
@@ -23,6 +23,7 @@ struct VSOut {
   @location(0) uv : vec2f,
   @location(1) light : f32,
   @location(2) @interpolate(flat) texId : u32,
+  @location(3) world : vec3f,
 };
 
 @vertex
@@ -33,6 +34,7 @@ fn vs(@location(0) pos : vec3f, @location(1) uv : vec2f,
   o.uv = uv;
   o.light = light;
   o.texId = u32(texId + 0.5);
+  o.world = pos;
   return o;
 }
 
@@ -47,7 +49,11 @@ fn fs(in : VSOut) -> @location(0) vec4f {
   let coord = vec2u(r.x + u32(uu), r.y + u32(vv));
   let palIdx = textureLoad(atlasTex, coord, 0).r;
   let rgb = textureLoad(palette, vec2u(palIdx, 0u), 0).rgb;
-  return vec4f(rgb * in.light, 1.0);
+  // Doom-style distance diminishing: dim with range, brighter sectors see farther.
+  let dist = length(in.world - frame.camPos);
+  let reach = mix(700.0, 2200.0, in.light);
+  let fog = clamp(1.0 - max(dist - 224.0, 0.0) / reach, 0.22, 1.0);
+  return vec4f(rgb * in.light * fog, 1.0);
 }
 `;
 
@@ -75,10 +81,10 @@ export class World {
     });
     device.queue.writeBuffer(this.vbuf, 0, mesh);
 
-    this.ubuf = device.createBuffer({ label: "world-vp", size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.ubuf = device.createBuffer({ label: "world-frame", size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const frameBGL = device.createBindGroupLayout({
       label: "world-frame-bgl",
-      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } }],
+      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }],
     });
     this.frameBG = device.createBindGroup({ label: "world-frame-bg", layout: frameBGL, entries: [{ binding: 0, resource: { buffer: this.ubuf } }] });
 
@@ -107,8 +113,11 @@ export class World {
     });
   }
 
-  setViewProj(vp: Float32Array<ArrayBuffer>): void {
-    this.device.queue.writeBuffer(this.ubuf, 0, vp);
+  setFrame(vp: Float32Array<ArrayBuffer>, camPos: readonly [number, number, number]): void {
+    const buf = new Float32Array(20);
+    buf.set(vp, 0);
+    buf[16] = camPos[0]; buf[17] = camPos[1]; buf[18] = camPos[2];
+    this.device.queue.writeBuffer(this.ubuf, 0, buf);
   }
 
   private ensureDepth(w: number, h: number): GPUTextureView {
@@ -149,5 +158,10 @@ export class World {
 
   get count(): number {
     return this.vertexCount;
+  }
+
+  /** A view of the current depth texture (for a follow-on sky pass that loads it). */
+  depthView(): GPUTextureView {
+    return this.ensureDepth(this.depthW, this.depthH);
   }
 }

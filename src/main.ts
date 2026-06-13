@@ -6,10 +6,11 @@ import { TextureLib } from "./wad/textures";
 import { Wireframe } from "./render/wireframe";
 import { World } from "./render/world";
 import { TextureAtlas } from "./render/atlas";
+import { Sky } from "./render/sky";
 import { buildWalls } from "./geometry/walls";
 import { buildFlats } from "./geometry/flats";
 import { FreeFlyCamera } from "./camera/freefly";
-import type { Vec3 } from "./math/mat4";
+import { invert, type Vec3 } from "./math/mat4";
 
 const WAD_URL = "/freedoom1.wad";
 const FIRST_MAP = "E1M1";
@@ -65,9 +66,12 @@ async function main() {
     for (const n of [sd.upper, sd.lower, sd.middle]) if (n !== "-" && n !== "") usedNames.add(n);
   }
   for (const sec of map.sectors) { usedNames.add(sec.floorFlat); usedNames.add(sec.ceilFlat); }
+  const SKY_TEX = "SKY1"; // E1 sky texture; packed so the sky pass can sample it
+  if (texLib.texture(SKY_TEX)) usedNames.add(SKY_TEX);
   const names = [...usedNames];
   const atlas = new TextureAtlas(gpu.device, texLib, basePalette, names);
   const tid = (name: string) => atlas.id(name);
+  const sky = new Sky(gpu.device, gpu.format, atlas, atlas.id(SKY_TEX));
 
   // Geometry: walls + floors/ceilings, concatenated into one vertex buffer.
   const walls = buildWalls(map, tid);
@@ -105,7 +109,7 @@ async function main() {
     if (document.pointerLockElement === canvas) cam.onMouse(e.movementX, e.movementY);
   });
 
-  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam };
+  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib };
 
   let lastW = 0, lastH = 0;
   let prev = performance.now();
@@ -125,8 +129,13 @@ async function main() {
     const encoder = gpu.device.createCommandEncoder({ label: "frame" });
 
     if (mode === "world") {
-      world.setViewProj(cam.viewProj(aspect));
+      const vp = cam.viewProj(aspect);
+      world.setFrame(vp, cam.pos);
       world.render(encoder, colorView, w, h);
+      if (sky.skyId >= 0) {
+        sky.setFrame(invert(vp), cam.pos);
+        sky.render(encoder, colorView, world.depthView());
+      }
     } else {
       const pass = encoder.beginRenderPass({
         label: "automap",
