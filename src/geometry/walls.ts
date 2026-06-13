@@ -13,8 +13,8 @@
 import type { DoomMap, Sector, Sidedef, Vertex } from "../wad/maps";
 
 export interface WallMesh {
-  data: Float32Array<ArrayBuffer>;
-  vertexCount: number;
+  vertices: Float32Array<ArrayBuffer>;
+  indices: Uint32Array<ArrayBuffer>;
 }
 
 export type TexId = (name: string) => number;
@@ -23,7 +23,8 @@ const FLOOR = 0, CEIL = 1;
 const hIndex = (sectorIdx: number, which: 0 | 1) => sectorIdx * 2 + which;
 
 export function buildWalls(map: DoomMap, tid: TexId): WallMesh {
-  const out: number[] = [];
+  const verts: number[] = [];
+  const indices: number[] = [];
 
   const quad = (
     a: Vertex, b: Vertex, yBottom: number, yTop: number,
@@ -34,13 +35,13 @@ export function buildWalls(map: DoomMap, tid: TexId): WallMesh {
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     const uA = xOff, uB = xOff + len;
     const ax = a.x, az = -a.y, bx = b.x, bz = -b.y;
-    //            x   z  hIdx  u   vBase
-    const Ab = [ax, az, botH, uA, yOff];
-    const Bb = [bx, bz, botH, uB, yOff];
-    const At = [ax, az, topH, uA, yOff];
-    const Bt = [bx, bz, topH, uB, yOff];
-    pushTri(out, Ab, Bb, Bt, vTop, light, texId);
-    pushTri(out, Ab, Bt, At, vTop, light, texId);
+    const base = verts.length / 9;
+    // 4 unique corners: Ab, Bb, Bt, At
+    pushV(verts, ax, az, botH, uA, yOff, vTop, light, texId);
+    pushV(verts, bx, bz, botH, uB, yOff, vTop, light, texId);
+    pushV(verts, bx, bz, topH, uB, yOff, vTop, light, texId);
+    pushV(verts, ax, az, topH, uA, yOff, vTop, light, texId);
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
   };
 
   for (const ld of map.linedefs) {
@@ -94,12 +95,10 @@ export function buildWalls(map: DoomMap, tid: TexId): WallMesh {
     }
   }
 
-  return { data: new Float32Array(out), vertexCount: out.length / 9 };
+  return { vertices: new Float32Array(verts), indices: new Uint32Array(indices) };
 }
 
-function pushTri(out: number[], p0: number[], p1: number[], p2: number[], vTop: number, light: number, texId: number): void {
-  for (const p of [p0, p1, p2]) {
-    // x, z, hIdx, u, vBase, vTop, vMode(=1 wall), light, texId
-    out.push(p[0]!, p[1]!, p[2]!, p[3]!, p[4]!, vTop, 1, light, texId);
-  }
+/** x, z, hIdx, u, vBase, vTop, vMode(=1 wall), light, texId */
+function pushV(out: number[], x: number, z: number, h: number, u: number, vBase: number, vTop: number, light: number, texId: number): void {
+  out.push(x, z, h, u, vBase, vTop, 1, light, texId);
 }

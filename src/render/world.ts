@@ -83,18 +83,19 @@ export class World {
   private readonly frameBG: GPUBindGroup;
   private readonly atlasBG: GPUBindGroup;
   private readonly vbuf: GPUBuffer;
-  private vertexCount: number;
+  private readonly ibuf: GPUBuffer;
+  private readonly indexCount: number;
   private depth: GPUTexture | null = null;
   private depthW = 0;
   private depthH = 0;
 
   constructor(
     device: GPUDevice, format: GPUTextureFormat,
-    mesh: Float32Array<ArrayBuffer>, vertexCount: number,
+    mesh: Float32Array<ArrayBuffer>, indices: Uint32Array<ArrayBuffer>,
     atlas: TextureAtlas, heightCount: number,
   ) {
     this.device = device;
-    this.vertexCount = vertexCount;
+    this.indexCount = indices.length;
     this.atlasBG = atlas.bindGroup;
 
     this.vbuf = device.createBuffer({
@@ -103,6 +104,13 @@ export class World {
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(this.vbuf, 0, mesh);
+
+    this.ibuf = device.createBuffer({
+      label: "world-indices",
+      size: Math.max(16, indices.byteLength),
+      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(this.ibuf, 0, indices);
 
     this.ubuf = device.createBuffer({ label: "world-frame", size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.hbuf = device.createBuffer({ label: "world-heights", size: Math.max(16, heightCount * 4), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -190,12 +198,13 @@ export class World {
     pass.setBindGroup(0, this.frameBG);
     pass.setBindGroup(1, this.atlasBG);
     pass.setVertexBuffer(0, this.vbuf);
-    pass.draw(this.vertexCount);
+    pass.setIndexBuffer(this.ibuf, "uint32");
+    pass.drawIndexed(this.indexCount);
     pass.end();
   }
 
   get count(): number {
-    return this.vertexCount;
+    return this.indexCount;
   }
 
   depthView(): GPUTextureView {

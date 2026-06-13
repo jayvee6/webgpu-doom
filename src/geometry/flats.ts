@@ -28,8 +28,8 @@ import type { DoomMap } from "../wad/maps";
 const SKY_FLAT = "F_SKY1";
 
 export interface FlatMesh {
-  data: Float32Array<ArrayBuffer>;
-  vertexCount: number;
+  vertices: Float32Array<ArrayBuffer>;
+  indices: Uint32Array<ArrayBuffer>;
   /** Sectors that produced no usable loop — diagnostic for the earcut→BSP decision. */
   failedSectors: number;
 }
@@ -39,7 +39,8 @@ export type TexId = (name: string) => number;
 type Edge = [number, number]; // [fromVertex, toVertex]
 
 export function buildFlats(map: DoomMap, tid: TexId): FlatMesh {
-  const out: number[] = [];
+  const verts: number[] = [];
+  const indices: number[] = [];
   let failedSectors = 0;
 
   // Gather directed boundary edges per sector.
@@ -88,12 +89,12 @@ export function buildFlats(map: DoomMap, tid: TexId): FlatMesh {
     for (let oi = 0; oi < outers.length; oi++) {
       const tri = triangulate(outers[oi]!, holesFor.get(oi) ?? [], map);
       if (!tri) continue;
-      emitFlat(out, tri.indices, tri.ring, map, s, light,
+      emitFlat(verts, indices, tri.indices, tri.ring, map, s, light,
         doFloor && floorTex >= 0, doCeil && ceilTex >= 0, floorTex, ceilTex);
     }
   }
 
-  return { data: new Float32Array(out), vertexCount: out.length / 9, failedSectors };
+  return { vertices: new Float32Array(verts), indices: new Uint32Array(indices), failedSectors };
 }
 
 /** Walk directed edges into closed loops, resolving junctions by tightest clockwise turn. */
@@ -160,27 +161,20 @@ function triangulate(
 }
 
 function emitFlat(
-  out: number[], indices: number[], ring: number[], map: DoomMap,
+  verts: number[], indices: number[], triIndices: number[], ring: number[], map: DoomMap,
   sectorIdx: number, light: number, doFloor: boolean, doCeil: boolean,
   floorTex: number, ceilTex: number,
 ): void {
   const floorH = sectorIdx * 2; // heightIndex for this sector's floor
   const ceilH = sectorIdx * 2 + 1;
-  for (let i = 0; i < indices.length; i += 3) {
-    const a = ring[indices[i]!]!, b = ring[indices[i + 1]!]!, c = ring[indices[i + 2]!]!;
-    const pa = vertXY(map, a), pb = vertXY(map, b), pc = vertXY(map, c);
-    // UV = absolute map (x,y); cull disabled so winding is irrelevant.
-    if (doFloor) {
-      pushV(out, pa[0], floorH, pa[1], light, floorTex);
-      pushV(out, pb[0], floorH, pb[1], light, floorTex);
-      pushV(out, pc[0], floorH, pc[1], light, floorTex);
-    }
-    if (doCeil) {
-      pushV(out, pa[0], ceilH, pa[1], light, ceilTex);
-      pushV(out, pb[0], ceilH, pb[1], light, ceilTex);
-      pushV(out, pc[0], ceilH, pc[1], light, ceilTex);
-    }
-  }
+  // Emit each ring vertex once per face, then the earcut indices offset by the base.
+  const emitRing = (hIdx: number, texId: number) => {
+    const base = verts.length / 9;
+    for (const vi of ring) { const p = vertXY(map, vi); pushV(verts, p[0], hIdx, p[1], light, texId); }
+    for (const t of triIndices) indices.push(base + t);
+  };
+  if (doFloor) emitRing(floorH, floorTex);
+  if (doCeil) emitRing(ceilH, ceilTex);
 }
 
 /** x, z(=-mapY), heightIndex, u(=mapX), vBase(=mapY), vTop(0), vMode(0 flat), light, texId */

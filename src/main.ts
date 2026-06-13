@@ -88,14 +88,17 @@ async function main() {
   const tid = (name: string) => atlas.id(name);
   const sky = new Sky(gpu.device, gpu.format, atlas, atlas.id(SKY_TEX));
 
-  // Geometry: walls + floors/ceilings, concatenated into one vertex buffer.
+  // Geometry: walls + floors/ceilings, merged into one indexed mesh.
   const walls = buildWalls(map, tid);
   const flats = buildFlats(map, tid);
-  const mesh = new Float32Array(walls.data.length + flats.data.length);
-  mesh.set(walls.data, 0);
-  mesh.set(flats.data, walls.data.length);
-  const totalVerts = walls.vertexCount + flats.vertexCount;
-  const world = new World(gpu.device, gpu.format, mesh, totalVerts, atlas, map.sectors.length * 2);
+  const mesh = new Float32Array(walls.vertices.length + flats.vertices.length);
+  mesh.set(walls.vertices, 0);
+  mesh.set(flats.vertices, walls.vertices.length);
+  const wallVertCount = walls.vertices.length / 9;
+  const indices = new Uint32Array(walls.indices.length + flats.indices.length);
+  indices.set(walls.indices, 0);
+  for (let i = 0; i < flats.indices.length; i++) indices[walls.indices.length + i] = flats.indices[i]! + wallVertCount;
+  const world = new World(gpu.device, gpu.format, mesh, indices, atlas, map.sectors.length * 2);
   const wireframe = new Wireframe(gpu.device, gpu.format, map);
 
   // Line specials (doors / lifts / moving floors / exit) drive live sector heights.
@@ -129,7 +132,7 @@ async function main() {
   const sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, requests, litPalette);
   console.log(`textures: ${names.length} names, atlas 2048×${atlas.atlasHeight}, ${atlas.missing.length} missing` +
     (atlas.missing.length ? ` (${atlas.missing.slice(0, 12).join(", ")}${atlas.missing.length > 12 ? "…" : ""})` : ""));
-  console.log(`geometry: ${walls.vertexCount} wall-verts + ${flats.vertexCount} flat-verts; ${flats.failedSectors} sectors failed triangulation`);
+  console.log(`geometry: ${mesh.length / 9} verts, ${indices.length} indices (${indices.length / 3} tris); ${flats.failedSectors} sectors failed`);
   console.log(`sprites: ${sprites.instanceCount} things drawn, ${unmappedTypes} unmapped types, ${sprites.missing.length} missing sprite lumps`);
 
   // Camera at player-1 start, eye height above the floor it stands on.
