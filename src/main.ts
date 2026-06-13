@@ -6,6 +6,7 @@ import { blocked, distSqPointSeg } from "./game/collision";
 import { MapState, USABLE, WALKOVER } from "./game/specials";
 import { Blockmap } from "./game/blockmap";
 import { GameState } from "./game/state";
+import { LightState } from "./game/lights";
 import { updateEntities, hasSight, monsterSound } from "./game/ai";
 import { fireHitscan } from "./game/combat";
 import { applyPickup } from "./game/items";
@@ -117,12 +118,15 @@ async function main() {
   const mesh = new Float32Array(walls.vertices.length + flats.vertices.length);
   mesh.set(walls.vertices, 0);
   mesh.set(flats.vertices, walls.vertices.length);
-  const wallVertCount = walls.vertices.length / 9;
+  const wallVertCount = walls.vertices.length / 10;
   const indices = new Uint32Array(walls.indices.length + flats.indices.length);
   indices.set(walls.indices, 0);
   for (let i = 0; i < flats.indices.length; i++) indices[walls.indices.length + i] = flats.indices[i]! + wallVertCount;
   const world = new World(gpu.device, gpu.format, mesh, indices, atlas, map.sectors.length * 2);
   const wireframe = new Wireframe(gpu.device, gpu.format, map);
+
+  // Animated sector lighting (flicker / strobe specials).
+  const lights = new LightState(map);
 
   // Line specials (doors / lifts / moving floors / exit) drive live sector heights.
   const mapState = new MapState(map);
@@ -145,7 +149,7 @@ async function main() {
   const sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, state.spriteLumps(), litPalette, state.entities.length);
   console.log(`textures: ${names.length} names, atlas 2048×${atlas.atlasHeight}, ${atlas.missing.length} missing` +
     (atlas.missing.length ? ` (${atlas.missing.slice(0, 12).join(", ")}${atlas.missing.length > 12 ? "…" : ""})` : ""));
-  console.log(`geometry: ${mesh.length / 9} verts, ${indices.length} indices (${indices.length / 3} tris); ${flats.failedSectors} sectors failed`);
+  console.log(`geometry: ${mesh.length / 10} verts, ${indices.length} indices (${indices.length / 3} tris); ${flats.failedSectors} sectors failed`);
   console.log(`entities: ${state.entities.length} (${state.unmappedTypes} unmapped types, ${sprites.missing.length} missing sprite lumps)`);
   const monsterTotal = state.entities.filter((e) => e.kind === "monster").length;
   const aliveMonsters = () => state.entities.reduce((n, e) => n + (e.kind === "monster" && e.mstate !== "dead" ? 1 : 0), 0);
@@ -209,7 +213,7 @@ async function main() {
     if (playing()) cam.onMouse(e.movementX, e.movementY);
   });
 
-  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound };
+  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound, lights };
 
   // "Use" (spacebar): trigger the nearest usable line ~52 units in front.
   function doUse(): void {
@@ -330,6 +334,7 @@ async function main() {
     if (moveMode === "fly") cam.update(dt);
     else walkStep(dt);
     mapState.update(dt);
+    lights.update(dt);
 
     // Combat timers, monster AI, pickups, respawn.
     sound.setListener(cam.pos[0], -cam.pos[2], cam.yaw);
@@ -366,6 +371,7 @@ async function main() {
     ];
 
     world.setHeights(mapState.heights());
+    world.setSectorLights(lights.lights());
     const inGame = playing() && mode === "world";
     elCrosshair.hidden = !inGame;
 
@@ -380,7 +386,7 @@ async function main() {
     // Rebuild billboards from live entities (the dynamic-sprite path).
     billboards.length = 0;
     for (const e of state.entities) {
-      if (e.active && e.lump) billboards.push({ lump: e.lump, x: e.x, y: e.y, floor: e.z, light: e.light });
+      if (e.active && e.lump) billboards.push({ lump: e.lump, x: e.x, y: e.y, floor: e.z, light: lights.sectorLight(e.sector) });
     }
     sprites.setBillboards(billboards);
 

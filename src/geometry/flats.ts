@@ -80,7 +80,6 @@ export function buildFlats(map: DoomMap, tid: TexId): FlatMesh {
       holesFor.set(target, list);
     }
 
-    const light = sec.light / 255;
     const doFloor = sec.floorFlat !== SKY_FLAT;
     const doCeil = sec.ceilFlat !== SKY_FLAT;
     const floorTex = tid(sec.floorFlat);
@@ -89,7 +88,7 @@ export function buildFlats(map: DoomMap, tid: TexId): FlatMesh {
     for (let oi = 0; oi < outers.length; oi++) {
       const tri = triangulate(outers[oi]!, holesFor.get(oi) ?? [], map);
       if (!tri) continue;
-      emitFlat(verts, indices, tri.indices, tri.ring, map, s, light,
+      emitFlat(verts, indices, tri.indices, tri.ring, map, s,
         doFloor && floorTex >= 0, doCeil && ceilTex >= 0, floorTex, ceilTex);
     }
   }
@@ -162,24 +161,24 @@ function triangulate(
 
 function emitFlat(
   verts: number[], indices: number[], triIndices: number[], ring: number[], map: DoomMap,
-  sectorIdx: number, light: number, doFloor: boolean, doCeil: boolean,
+  sectorIdx: number, doFloor: boolean, doCeil: boolean,
   floorTex: number, ceilTex: number,
 ): void {
   const floorH = sectorIdx * 2; // heightIndex for this sector's floor
   const ceilH = sectorIdx * 2 + 1;
   // Emit each ring vertex once per face, then the earcut indices offset by the base.
   const emitRing = (hIdx: number, texId: number) => {
-    const base = verts.length / 9;
-    for (const vi of ring) { const p = vertXY(map, vi); pushV(verts, p[0], hIdx, p[1], light, texId); }
+    const base = verts.length / 10;
+    for (const vi of ring) { const p = vertXY(map, vi); pushV(verts, p[0], hIdx, p[1], sectorIdx, texId); }
     for (const t of triIndices) indices.push(base + t);
   };
   if (doFloor) emitRing(floorH, floorTex);
   if (doCeil) emitRing(ceilH, ceilTex);
 }
 
-/** x, z(=-mapY), heightIndex, u(=mapX), vBase(=mapY), vTop(0), vMode(0 flat), light, texId */
-function pushV(out: number[], mapX: number, hIdx: number, mapY: number, light: number, texId: number): void {
-  out.push(mapX, -mapY, hIdx, mapX, mapY, 0, 0, light, texId);
+/** x, z(=-mapY), heightIndex, lightSec, u(=mapX), vBase(=mapY), vTop(0), vMode(0 flat), contrast(0), texId */
+function pushV(out: number[], mapX: number, hIdx: number, mapY: number, lightSec: number, texId: number): void {
+  out.push(mapX, -mapY, hIdx, lightSec, mapX, mapY, 0, 0, 0, texId);
 }
 
 function vertXY(map: DoomMap, vi: number): [number, number] {

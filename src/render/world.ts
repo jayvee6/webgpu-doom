@@ -20,6 +20,7 @@ const WGSL = /* wgsl */ `
 struct Frame { vp : mat4x4f, camPos : vec3f, _pad : f32 };
 @group(0) @binding(0) var<uniform> frame : Frame;
 @group(0) @binding(1) var<storage, read> heights : array<f32>;
+@group(0) @binding(2) var<storage, read> sectorLights : array<f32>;
 
 @group(1) @binding(0) var atlasTex : texture_2d<u32>;
 @group(1) @binding(1) var palette  : texture_2d<f32>;
@@ -44,17 +45,19 @@ fn lightRow(light : f32, dist : f32) -> u32 {
   return u32(level);
 }
 
+// Vertex (10 f32): a=(x,z,hIdx,lightSec) b=(u,vBase,vTop) c=(vMode,contrast,texId)
 @vertex
-fn vs(@location(0) a : vec3f, @location(1) b : vec2f, @location(2) c : vec4f) -> VSOut {
+fn vs(@location(0) a : vec4f, @location(1) b : vec3f, @location(2) c : vec3f) -> VSOut {
   let y = heights[u32(a.z + 0.5)];
   let world = vec3f(a.x, y, a.y);
   var o : VSOut;
   o.clip = frame.vp * vec4f(world, 1.0);
-  let isWall = c.y > 0.5;
-  let V = select(b.y, b.y + (c.x - y), isWall);
+  let isWall = c.x > 0.5;
+  let V = select(b.y, b.y + (b.z - y), isWall);
   o.uv = vec2f(b.x, V);
-  o.light = c.z;
-  o.texId = u32(c.w + 0.5);
+  // Live sector light (animated by light specials) + per-wall fake contrast.
+  o.light = clamp(sectorLights[u32(a.w + 0.5)] + c.y, 0.0, 1.0);
+  o.texId = u32(c.z + 0.5);
   o.world = world;
   return o;
 }
@@ -80,6 +83,7 @@ export class World {
   private readonly pipeline: GPURenderPipeline;
   private readonly ubuf: GPUBuffer;
   private readonly hbuf: GPUBuffer;
+  private readonly slbuf: GPUBuffer;
   private readonly frameBG: GPUBindGroup;
   private readonly atlasBG: GPUBindGroup;
   private readonly vbuf: GPUBuffer;
@@ -114,12 +118,14 @@ export class World {
 
     this.ubuf = device.createBuffer({ label: "world-frame", size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.hbuf = device.createBuffer({ label: "world-heights", size: Math.max(16, heightCount * 4), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    this.slbuf = device.createBuffer({ label: "world-sector-lights", size: Math.max(16, (heightCount / 2) * 4), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
 
     const frameBGL = device.createBindGroupLayout({
       label: "world-frame-bgl",
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
       ],
     });
     this.frameBG = device.createBindGroup({
@@ -128,6 +134,7 @@ export class World {
       entries: [
         { binding: 0, resource: { buffer: this.ubuf } },
         { binding: 1, resource: { buffer: this.hbuf } },
+        { binding: 2, resource: { buffer: this.slbuf } },
       ],
     });
 
@@ -140,11 +147,11 @@ export class World {
         entryPoint: "vs",
         buffers: [
           {
-            arrayStride: 9 * 4,
+            arrayStride: 10 * 4,
             attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x3" },
-              { shaderLocation: 1, offset: 3 * 4, format: "float32x2" },
-              { shaderLocation: 2, offset: 5 * 4, format: "float32x4" },
+              { shaderLocation: 0, offset: 0, format: "float32x4" },     // x, z, hIdx, lightSec
+              { shaderLocation: 1, offset: 4 * 4, format: "float32x3" }, // u, vBase, vTop
+              { shaderLocation: 2, offset: 7 * 4, format: "float32x3" }, // vMode, contrast, texId
             ],
           },
         ],
@@ -164,6 +171,10 @@ export class World {
 
   setHeights(heights: Float32Array<ArrayBuffer>): void {
     this.device.queue.writeBuffer(this.hbuf, 0, heights);
+  }
+
+  setSectorLights(lights: Float32Array<ArrayBuffer>): void {
+    this.device.queue.writeBuffer(this.slbuf, 0, lights);
   }
 
   private ensureDepth(w: number, h: number): GPUTextureView {

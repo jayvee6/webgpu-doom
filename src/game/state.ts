@@ -19,8 +19,9 @@ export interface Entity {
   x: number; // map x
   y: number; // map y
   z: number; // feet (floor height)
+  sector: number; // sector the thing stands in (-1 if none)
   angle: number; // degrees
-  light: number; // 0..1
+  light: number; // 0..1 (spawn light; live light comes from LightState per frame)
   radius: number;
   height: number;
   health: number;
@@ -85,7 +86,7 @@ export class GameState {
       frameLumps[ts.frame] = lump;
 
       this.entities.push({
-        kind, type: t.type, x: t.x, y: t.y, z, angle: t.angle, light,
+        kind, type: t.type, x: t.x, y: t.y, z, sector: sec, angle: t.angle, light,
         radius: kind === "monster" ? 20 : 16, height: 56,
         health: kind === "monster" ? monsterHealth(t.type) : 0,
         lump, active: true,
