@@ -15,7 +15,7 @@ import { loadPalettes, paletteRGBA, buildLitPalette } from "./wad/graphics";
 import { TextureLib } from "./wad/textures";
 import { SpriteLib } from "./wad/sprites";
 import { Wireframe } from "./render/wireframe";
-import { World } from "./render/world";
+import { World, SAMPLES } from "./render/world";
 import { TextureAtlas } from "./render/atlas";
 import { Sky } from "./render/sky";
 import { SpriteRenderer, type SpriteRequest } from "./render/sprites";
@@ -323,6 +323,20 @@ async function main() {
   let prev = performance.now();
   let frame = 0, fps = 0, fpsT = prev, fpsN = 0;
 
+  // MSAA: all passes render into a 4× color target, resolved to the swapchain.
+  let msaaTex: GPUTexture | null = null, msaaW = 0, msaaH = 0;
+  function msaaView(w: number, h: number): GPUTextureView {
+    if (!msaaTex || msaaW !== w || msaaH !== h) {
+      msaaTex?.destroy();
+      msaaTex = gpu.device.createTexture({
+        label: "msaa-color", size: { width: w, height: h }, format: gpu.format,
+        sampleCount: SAMPLES, usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      msaaW = w; msaaH = h;
+    }
+    return msaaTex.createView();
+  }
+
   // Fixed-timestep simulation at Doom's 35 tics/sec; render interpolates position.
   const FIXED = 1 / 35;
   let acc = 0;
@@ -391,7 +405,8 @@ async function main() {
     sprites.setBillboards(billboards);
 
     const aspect = w / h;
-    const colorView = gpu.context.getCurrentTexture().createView();
+    const swapView = gpu.context.getCurrentTexture().createView();
+    const colorView = msaaView(w, h); // 4× MSAA target
     const encoder = gpu.device.createCommandEncoder({ label: "frame" });
 
     if (mode === "world") {
@@ -414,12 +429,19 @@ async function main() {
       wireframe.draw(pass);
       pass.end();
     }
+
+    // Resolve the MSAA color into the swapchain.
+    encoder.beginRenderPass({
+      label: "resolve",
+      colorAttachments: [{ view: colorView, resolveTarget: swapView, loadOp: "load", storeOp: "discard" }],
+    }).end();
+
     gpu.device.queue.submit([encoder.finish()]);
 
     frame++; fpsN++;
     if (now - fpsT >= 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
     hud.textContent =
-      `webgpu-doom — P3.5 pickups   [${mode} · ${moveMode}]  (CLICK fire · Space use · M map · F fly · WASD)\n` +
+      `webgpu-doom — P4 MSAA   [${mode} · ${moveMode}]  (CLICK fire · Space use · M map · F fly · WASD)\n` +
       `HEALTH ${state.player.health}  ARMOR ${state.player.armor}  AMMO ${state.player.ammo.bul}  ·  monsters ${aliveMonsters()}/${monsterTotal}  ·  ${fps} fps\n` +
       `${map.name}  pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);

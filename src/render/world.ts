@@ -15,6 +15,7 @@
 import type { TextureAtlas } from "./atlas";
 
 const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
+export const SAMPLES = 4; // MSAA sample count (shared by all world-pass pipelines)
 
 const WGSL = /* wgsl */ `
 struct Frame { vp : mat4x4f, camPos : vec3f, _pad : f32 };
@@ -159,6 +160,7 @@ export class World {
       fragment: { module, entryPoint: "fs", targets: [{ format }] },
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
+      multisample: { count: SAMPLES },
     });
   }
 
@@ -184,6 +186,7 @@ export class World {
         label: "world-depth",
         size: { width: w, height: h },
         format: DEPTH_FORMAT,
+        sampleCount: SAMPLES,
         usage: GPUTextureUsage.RENDER_ATTACHMENT,
       });
       this.depthW = w;

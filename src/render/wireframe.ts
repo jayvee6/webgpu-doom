@@ -129,6 +129,7 @@ export class Wireframe {
       },
       fragment: { module, entryPoint: "fs", targets: [{ format }] },
       primitive: { topology: "line-list" },
+      multisample: { count: 4 },
     });
   }
 

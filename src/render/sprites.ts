@@ -202,6 +202,7 @@ export class SpriteRenderer {
       fragment: { module, entryPoint: "fs", targets: [{ format }] },
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
+      multisample: { count: 4 },
     });
   }
 

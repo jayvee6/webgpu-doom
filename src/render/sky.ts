@@ -84,6 +84,7 @@ export class Sky {
       fragment: { module, entryPoint: "fs", targets: [{ format }] },
       primitive: { topology: "triangle-list" },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: "less-equal" },
+      multisample: { count: 4 },
     });
   }
 
