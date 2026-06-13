@@ -91,22 +91,29 @@ export class SpriteRenderer {
   private readonly ubuf: GPUBuffer;
   private readonly frameBG: GPUBindGroup;
   private readonly dataBG: GPUBindGroup;
-  readonly instanceCount: number;
+  private readonly instBuf: GPUBuffer;
+  private readonly maxInstances: number;
+  /** lump → atlas placement + offsets, for per-frame instance building. */
+  private readonly rects = new Map<string, { ox: number; oy: number; w: number; h: number; lo: number; to: number }>();
+  private readonly scratch: Float32Array<ArrayBuffer>;
+  instanceCount = 0;
   readonly atlasHeight: number;
   readonly missing: string[] = [];
 
-  constructor(device: GPUDevice, format: GPUTextureFormat, lib: SpriteLib, requests: SpriteRequest[], litPalette: Uint8Array<ArrayBuffer>) {
+  constructor(device: GPUDevice, format: GPUTextureFormat, lib: SpriteLib, lumps: string[], litPalette: Uint8Array<ArrayBuffer>, maxInstances: number) {
     this.device = device;
+    this.maxInstances = Math.max(1, maxInstances);
+    this.scratch = new Float32Array(this.maxInstances * FLOATS_PER_INST);
 
-    // Decode unique sprite lumps and shelf-pack into the RG8 index+mask atlas.
+    // Decode the given sprite lumps and shelf-pack into the RG8 index+mask atlas.
     const images = new Map<string, SpriteImage>();
-    for (const r of requests) {
-      if (images.has(r.lump)) continue;
-      const img = lib.image(r.lump);
-      if (img) images.set(r.lump, img);
-      else this.missing.push(r.lump);
+    for (const lump of lumps) {
+      if (images.has(lump)) continue;
+      const img = lib.image(lump);
+      if (img) images.set(lump, img);
+      else this.missing.push(lump);
     }
-    const lumps = [...images.keys()];
+    lumps = [...images.keys()];
     const origin = new Map<string, [number, number]>();
     const byHeight = [...lumps].sort((a, b) => images.get(b)!.height - images.get(a)!.height);
     let x = 0, y = 0, shelfH = 0;
@@ -150,27 +157,18 @@ export class SpriteRenderer {
     });
     device.queue.writeTexture({ texture: litTex }, litPalette, { bytesPerRow: 256 * 4, rowsPerImage: 32 }, { width: 256, height: 32 });
 
-    // Build instances (skip requests whose sprite was missing).
-    const insts: number[] = [];
-    for (const r of requests) {
-      const img = images.get(r.lump);
-      const o = origin.get(r.lump);
-      if (!img || !o) continue;
-      const w = img.width, h = img.height;
-      insts.push(
-        r.x, r.floor + img.topOffset - h / 2, -r.y, // center
-        w / 2, h / 2, w / 2 - img.leftOffset, r.light, // halfW, halfH, hoff, light
-        o[0], o[1], w, h, // atlas rect
-      );
+    // Record each lump's atlas placement + offsets for per-frame instancing.
+    for (const lump of lumps) {
+      const img = images.get(lump)!;
+      const [ox, oy] = origin.get(lump)!;
+      this.rects.set(lump, { ox, oy, w: img.width, h: img.height, lo: img.leftOffset, to: img.topOffset });
     }
-    this.instanceCount = insts.length / FLOATS_PER_INST;
-    const instData = new Float32Array(insts);
-    const instBuf = device.createBuffer({
+    // Instance storage sized for the worst case; filled each frame by setBillboards.
+    this.instBuf = device.createBuffer({
       label: "sprite-insts",
-      size: Math.max(FLOATS_PER_INST * 4, instData.byteLength),
+      size: this.maxInstances * FLOATS_PER_INST * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(instBuf, 0, instData);
 
     this.ubuf = device.createBuffer({ label: "sprite-frame", size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const frameBGL = device.createBindGroupLayout({
@@ -190,7 +188,7 @@ export class SpriteRenderer {
       label: "sprite-data-bg",
       layout: dataBGL,
       entries: [
-        { binding: 0, resource: { buffer: instBuf } },
+        { binding: 0, resource: { buffer: this.instBuf } },
         { binding: 1, resource: atlasTex.createView() },
         { binding: 2, resource: litTex.createView() },
       ],
@@ -213,6 +211,32 @@ export class SpriteRenderer {
     buf[16] = camPos[0]; buf[17] = camPos[1]; buf[18] = camPos[2];
     buf[20] = camRight[0]; buf[21] = camRight[1]; buf[22] = camRight[2];
     this.device.queue.writeBuffer(this.ubuf, 0, buf);
+  }
+
+  /** Rebuild the instance buffer from a live billboard list (per frame). */
+  setBillboards(requests: SpriteRequest[]): void {
+    const s = this.scratch;
+    let n = 0;
+    for (const r of requests) {
+      if (n >= this.maxInstances) break;
+      const rect = this.rects.get(r.lump);
+      if (!rect) continue;
+      const o = n * FLOATS_PER_INST;
+      s[o] = r.x;
+      s[o + 1] = r.floor + rect.to - rect.h / 2; // center y (feet + topoffset - h/2)
+      s[o + 2] = -r.y;
+      s[o + 3] = rect.w / 2;
+      s[o + 4] = rect.h / 2;
+      s[o + 5] = rect.w / 2 - rect.lo;
+      s[o + 6] = r.light;
+      s[o + 7] = rect.ox;
+      s[o + 8] = rect.oy;
+      s[o + 9] = rect.w;
+      s[o + 10] = rect.h;
+      n++;
+    }
+    this.instanceCount = n;
+    if (n > 0) this.device.queue.writeBuffer(this.instBuf, 0, s, 0, n * FLOATS_PER_INST);
   }
 
   render(encoder: GPUCommandEncoder, colorView: GPUTextureView, depthView: GPUTextureView): void {

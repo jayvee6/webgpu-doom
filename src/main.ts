@@ -4,10 +4,11 @@ import { loadMap } from "./wad/maps";
 import { locateSector } from "./wad/bsp";
 import { blocked, distSqPointSeg } from "./game/collision";
 import { MapState, USABLE, WALKOVER } from "./game/specials";
+import { Blockmap } from "./game/blockmap";
+import { GameState } from "./game/state";
 import { loadPalettes, paletteRGBA, buildLitPalette } from "./wad/graphics";
 import { TextureLib } from "./wad/textures";
 import { SpriteLib } from "./wad/sprites";
-import { thingSprite } from "./wad/thingtypes";
 import { Wireframe } from "./render/wireframe";
 import { World } from "./render/world";
 import { TextureAtlas } from "./render/atlas";
@@ -115,25 +116,15 @@ async function main() {
   };
   world.setHeights(mapState.heights());
 
-  // Sprites (THINGS): resolve each thing's spawn sprite → billboard request.
+  // Game state: build entities (THINGS) and the collision broadphase.
   const spriteLib = new SpriteLib(wad);
-  const requests: SpriteRequest[] = [];
-  let unmappedTypes = 0;
-  for (const t of map.things) {
-    const ts = thingSprite(t.type);
-    if (!ts) { unmappedTypes++; continue; }
-    const lump = spriteLib.resolveLump(ts.sprite, ts.frame);
-    if (!lump) continue;
-    const sec = locateSector(map, t.x, t.y);
-    const floor = sec >= 0 ? map.sectors[sec]!.floorHeight : 0;
-    const light = sec >= 0 ? map.sectors[sec]!.light / 255 : 1;
-    requests.push({ lump, x: t.x, y: t.y, floor, light });
-  }
-  const sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, requests, litPalette);
+  const state = new GameState(map, spriteLib);
+  const blockmap = new Blockmap(map);
+  const sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, state.spriteLumps(), litPalette, state.entities.length);
   console.log(`textures: ${names.length} names, atlas 2048×${atlas.atlasHeight}, ${atlas.missing.length} missing` +
     (atlas.missing.length ? ` (${atlas.missing.slice(0, 12).join(", ")}${atlas.missing.length > 12 ? "…" : ""})` : ""));
   console.log(`geometry: ${mesh.length / 9} verts, ${indices.length} indices (${indices.length / 3} tris); ${flats.failedSectors} sectors failed`);
-  console.log(`sprites: ${sprites.instanceCount} things drawn, ${unmappedTypes} unmapped types, ${sprites.missing.length} missing sprite lumps`);
+  console.log(`entities: ${state.entities.length} (${state.unmappedTypes} unmapped types, ${sprites.missing.length} missing sprite lumps)`);
 
   // Camera at player-1 start, eye height above the floor it stands on.
   const p1 = map.things.find((t) => t.type === 1);
@@ -185,14 +176,14 @@ async function main() {
     if (playing()) cam.onMouse(e.movementX, e.movementY);
   });
 
-  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState };
+  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap };
 
   // "Use" (spacebar): trigger the nearest usable line ~52 units in front.
   function doUse(): void {
     const px = cam.pos[0], py = -cam.pos[2];
     const ux = px + Math.sin(cam.yaw) * 52, uy = py + Math.cos(cam.yaw) * 52;
     let best = -1, bestD = 50 * 50;
-    for (let i = 0; i < map.linedefs.length; i++) {
+    for (const i of blockmap.linesNear(ux, uy, 64)) {
       const ld = map.linedefs[i]!;
       if (!USABLE.has(ld.special)) continue;
       const a = map.vertexes[ld.v1], b = map.vertexes[ld.v2];
@@ -205,7 +196,7 @@ async function main() {
 
   // Walkover triggers: did the player's move segment cross a walkover-special line?
   function checkWalkover(x0: number, y0: number, x1: number, y1: number): void {
-    for (let i = 0; i < map.linedefs.length; i++) {
+    for (const i of blockmap.linesNear((x0 + x1) / 2, (y0 + y1) / 2, 64)) {
       const ld = map.linedefs[i]!;
       if (!WALKOVER.has(ld.special)) continue;
       const a = map.vertexes[ld.v1], b = map.vertexes[ld.v2];
@@ -223,8 +214,9 @@ async function main() {
     const dd = (cam.running() ? RUN_SPEED : WALK_SPEED) * dt;
     const ddx = idx * dd, ddy = idy * dd;
     const px0 = cam.pos[0], py0 = -cam.pos[2];
-    if (ddx !== 0 && !blocked(map, mx + ddx, my, pf)) mx += ddx;
-    if (ddy !== 0 && !blocked(map, mx, my + ddy, pf)) my += ddy;
+    const near = blockmap.linesNear(mx, my, 96);
+    if (ddx !== 0 && !blocked(map, mx + ddx, my, pf, near)) mx += ddx;
+    if (ddy !== 0 && !blocked(map, mx, my + ddy, pf, near)) my += ddy;
     cam.pos[0] = mx; cam.pos[2] = -my;
     if (mx !== px0 || my !== py0) checkWalkover(px0, py0, mx, my);
 
@@ -247,8 +239,21 @@ async function main() {
   let prev = performance.now();
   let frame = 0, fps = 0, fpsT = prev, fpsN = 0;
 
+  // Fixed-timestep simulation at Doom's 35 tics/sec; render interpolates position.
+  const FIXED = 1 / 35;
+  let acc = 0;
+  let simPrev: Vec3 = [cam.pos[0], cam.pos[1], cam.pos[2]];
+  const billboards: SpriteRequest[] = [];
+
+  function simulate(dt: number): void {
+    simPrev = [cam.pos[0], cam.pos[1], cam.pos[2]];
+    if (moveMode === "fly") cam.update(dt);
+    else walkStep(dt);
+    mapState.update(dt);
+  }
+
   function render(now: number) {
-    const dt = Math.min((now - prev) / 1000, 0.05);
+    const dt = Math.min((now - prev) / 1000, 0.1);
     prev = now;
 
     if (gpu.resize()) gpu.context.configure({ device: gpu.device, format: gpu.format, alphaMode: "opaque" });
@@ -257,27 +262,43 @@ async function main() {
 
     // Sim only while actively playing; the scene still renders behind overlays.
     if (playing()) {
-      if (moveMode === "fly") cam.update(dt);
-      else walkStep(dt);
-      mapState.update(dt);
+      acc += dt;
+      let steps = 0;
+      while (acc >= FIXED && steps < 5) { simulate(FIXED); acc -= FIXED; steps++; }
+    } else {
+      acc = 0; simPrev = [cam.pos[0], cam.pos[1], cam.pos[2]];
     }
+    const alpha = Math.max(0, Math.min(1, acc / FIXED));
+    const eye: Vec3 = [
+      simPrev[0] + (cam.pos[0] - simPrev[0]) * alpha,
+      simPrev[1] + (cam.pos[1] - simPrev[1]) * alpha,
+      simPrev[2] + (cam.pos[2] - simPrev[2]) * alpha,
+    ];
+
     world.setHeights(mapState.heights());
     elCrosshair.hidden = !(playing() && mode === "world");
+
+    // Rebuild billboards from live entities (the dynamic-sprite path).
+    billboards.length = 0;
+    for (const e of state.entities) {
+      if (e.active && e.lump) billboards.push({ lump: e.lump, x: e.x, y: e.y, floor: e.z, light: e.light });
+    }
+    sprites.setBillboards(billboards);
 
     const aspect = w / h;
     const colorView = gpu.context.getCurrentTexture().createView();
     const encoder = gpu.device.createCommandEncoder({ label: "frame" });
 
     if (mode === "world") {
-      const vp = cam.viewProj(aspect);
-      world.setFrame(vp, cam.pos);
+      const vp = cam.viewProjAt(eye, aspect);
+      world.setFrame(vp, eye);
       world.render(encoder, colorView, w, h);
       // Sprites after world (depth-tested + writing), before sky.
       const camRight: [number, number, number] = [Math.cos(cam.yaw), 0, Math.sin(cam.yaw)];
-      sprites.setFrame(vp, cam.pos, camRight);
+      sprites.setFrame(vp, eye, camRight);
       sprites.render(encoder, colorView, world.depthView());
       if (sky.skyId >= 0) {
-        sky.setFrame(invert(vp), cam.pos);
+        sky.setFrame(invert(vp), eye);
         sky.render(encoder, colorView, world.depthView());
       }
     } else {
@@ -293,8 +314,8 @@ async function main() {
     frame++; fpsN++;
     if (now - fpsT >= 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
     hud.textContent =
-      `webgpu-doom — M7 doors   [${mode} · ${moveMode}]  (Space: use · M: map · F: fly · WASD · click: mouselook)\n` +
-      `${map.name}  ${world.count} verts  ·  ${fps} fps\n` +
+      `webgpu-doom — P2 entities   [${mode} · ${moveMode}]  (Space: use · M: map · F: fly · WASD)\n` +
+      `${map.name}  ${state.entities.length} ents  ·  ${sprites.instanceCount} drawn  ·  ${fps} fps\n` +
       `pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°  pitch ${((cam.pitch * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);
   }

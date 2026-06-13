@@ -123,3 +123,20 @@ const TABLE: Record<number, ThingSprite> = {
 export function thingSprite(type: number): ThingSprite | null {
   return TABLE[type] ?? null;
 }
+
+const MONSTERS = new Set([3004, 9, 65, 3001, 3002, 58, 3006, 3005, 3003, 69, 68, 71, 66, 67, 64, 7, 16, 84]);
+const ITEMS = new Set([
+  2001, 82, 2002, 2003, 2004, 2005, 2006, // weapons
+  2007, 2048, 2008, 2049, 2010, 2046, 2047, 17, 8, // ammo
+  2011, 2012, 2014, 2015, 2018, 2019, 2013, 2022, 2023, 2024, 2025, 2026, 2045, // health/armor/powerups
+  5, 40, 6, 39, 13, 38, // keys
+]);
+
+export type ThingCategory = "monster" | "item" | "decor";
+
+/** Classify a thing type for entity behavior (monsters fight, items are picked up). */
+export function thingCategory(type: number): ThingCategory {
+  if (MONSTERS.has(type)) return "monster";
+  if (ITEMS.has(type)) return "item";
+  return "decor";
+}

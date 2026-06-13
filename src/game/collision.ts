@@ -27,16 +27,24 @@ export function solidLine(map: DoomMap, lineIdx: number, pf: number): boolean {
   return false;
 }
 
-/** Would a player circle at (x,y) overlap any solid line? `pf` = current floor height. */
-export function blocked(map: DoomMap, x: number, y: number, pf: number, radius = PLAYER_RADIUS): boolean {
+/**
+ * Would a player circle at (x,y) overlap any solid line? `pf` = current floor.
+ * Pass `lineIdxs` (e.g. from a blockmap) to test only nearby lines; omit to scan all.
+ */
+export function blocked(map: DoomMap, x: number, y: number, pf: number, lineIdxs?: Iterable<number>, radius = PLAYER_RADIUS): boolean {
   const r2 = radius * radius;
-  for (let i = 0; i < map.linedefs.length; i++) {
+  const test = (i: number): boolean => {
     const ld = map.linedefs[i]!;
     const a = map.vertexes[ld.v1];
     const b = map.vertexes[ld.v2];
-    if (!a || !b) continue;
-    if (distSqPointSeg(x, y, a.x, a.y, b.x, b.y) >= r2) continue;
-    if (solidLine(map, i, pf)) return true;
+    if (!a || !b) return false;
+    if (distSqPointSeg(x, y, a.x, a.y, b.x, b.y) >= r2) return false;
+    return solidLine(map, i, pf);
+  };
+  if (lineIdxs) {
+    for (const i of lineIdxs) if (test(i)) return true;
+  } else {
+    for (let i = 0; i < map.linedefs.length; i++) if (test(i)) return true;
   }
   return false;
 }

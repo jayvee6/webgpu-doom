@@ -83,9 +83,14 @@ export class FreeFlyCamera {
   }
 
   viewProj(aspect: number): Mat4 {
+    return this.viewProjAt(this.pos, aspect);
+  }
+
+  /** Build the view-projection from an arbitrary eye position (for interpolation). */
+  viewProjAt(pos: Vec3, aspect: number): Mat4 {
     const f = this.forward();
-    const center: Vec3 = [this.pos[0] + f[0], this.pos[1] + f[1], this.pos[2] + f[2]];
-    const view = lookAt(this.pos, center, [0, 1, 0]);
+    const center: Vec3 = [pos[0] + f[0], pos[1] + f[1], pos[2] + f[2]];
+    const view = lookAt(pos, center, [0, 1, 0]);
     const proj = perspectiveZO(this.fovY, aspect, this.near, this.far);
     return multiply(proj, view);
   }
