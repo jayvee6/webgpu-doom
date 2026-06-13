@@ -23,13 +23,20 @@ const FIRST_MAP = "E1M1";
 const EYE_HEIGHT = 41;
 
 const hud = document.getElementById("hud") as HTMLDivElement;
-const errBox = document.getElementById("err") as HTMLDivElement;
+const $ = (id: string) => document.getElementById(id)!;
+const elLoading = $("loading"), elTitle = $("title"), elErr = $("err");
+const elLoadFill = $("load-fill"), elLoadLabel = $("load-label");
+const elErrMsg = $("err-msg"), elCta = $("cta"), elCrosshair = $("crosshair");
+
+function showError(message: string): never {
+  elLoading.hidden = true; elTitle.hidden = true;
+  elErr.hidden = false;
+  elErrMsg.textContent = message;
+  throw new Error(message);
+}
 
 function fatal(e: unknown): never {
-  const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
-  errBox.style.display = "grid";
-  errBox.textContent = `webgpu-doom failed to start\n\n${msg}`;
-  throw e;
+  showError(e instanceof Error ? e.message : String(e));
 }
 
 /** Do segments (p1→p2) and (p3→p4) intersect? Used for walkover triggers. */
@@ -47,9 +54,21 @@ const GRAVITY = 1800;
 
 async function main() {
   const canvas = document.getElementById("gfx") as HTMLCanvasElement;
+
+  // Friendly, specific message when the browser simply lacks WebGPU.
+  if (!navigator.gpu) {
+    showError("This demo needs WebGPU.\n\nTry Chrome or Edge 113+, Safari 18+, or Firefox with WebGPU enabled.");
+  }
   const gpu = await initGpu(canvas).catch(fatal);
 
-  const wad = await Wad.load(WAD_URL).catch(fatal);
+  // Stream the ~28 MB WAD with a real progress bar.
+  const wad = await Wad.load(WAD_URL, (f) => {
+    const pct = Math.round(f * 100);
+    elLoadFill.style.width = `${pct}%`;
+    elLoadLabel.textContent = `LOADING WAD… ${pct}%`;
+  }).catch(fatal);
+  elLoadLabel.textContent = "BUILDING LEVEL…";
+
   const palettes = loadPalettes(wad);
   const basePalette = paletteRGBA(palettes, 0);
   const map = loadMap(wad, FIRST_MAP);
@@ -124,18 +143,42 @@ async function main() {
 
   let mode: "world" | "automap" = "world";
   let moveMode: "walk" | "fly" = "walk";
+  let started = false;
+  const playing = () => document.pointerLockElement === canvas;
 
-  // Input
+  // Title / pause gate: pointer lock is the play state; releasing it (Esc) pauses.
+  // Hide the title only once lock is actually granted (pointerlockchange), so a
+  // denied lock leaves the title up to retry rather than stranding the player.
+  function enter(): void {
+    void canvas.requestPointerLock();
+  }
+  elCta.addEventListener("click", enter);
+  canvas.addEventListener("click", () => { if (started && !playing()) enter(); });
+  document.addEventListener("pointerlockchange", () => {
+    if (playing()) {
+      started = true;
+      elTitle.hidden = true;
+    } else if (started) {
+      cam.onKeyClear();
+      const cta = elCta as HTMLElement;
+      cta.textContent = "CLICK TO RESUME";
+      (elTitle.querySelector(".title") as HTMLElement).textContent = "PAUSED";
+      (elTitle.querySelector(".subtitle") as HTMLElement).textContent = "POINTER RELEASED";
+      elTitle.hidden = false;
+    }
+  });
+
+  // Input — gameplay keys only while actively playing (pointer locked).
   addEventListener("keydown", (e) => {
+    if (!playing()) return;
     if (e.code === "KeyM") { mode = mode === "world" ? "automap" : "world"; return; }
     if (e.code === "KeyF") { moveMode = moveMode === "walk" ? "fly" : "walk"; cam.vz = 0; return; }
     if (e.code === "Space") { e.preventDefault(); doUse(); return; }
     cam.onKey(e.code, true);
   });
   addEventListener("keyup", (e) => cam.onKey(e.code, false));
-  canvas.addEventListener("click", () => canvas.requestPointerLock());
   addEventListener("mousemove", (e) => {
-    if (document.pointerLockElement === canvas) cam.onMouse(e.movementX, e.movementY);
+    if (playing()) cam.onMouse(e.movementX, e.movementY);
   });
 
   (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState };
@@ -208,12 +251,14 @@ async function main() {
     const w = canvas.width, h = canvas.height;
     if (w !== lastW || h !== lastH) { lastW = w; lastH = h; wireframe.setView(w, h); }
 
-    if (moveMode === "fly") cam.update(dt);
-    else walkStep(dt);
-
-    // Advance door/lift/floor animations and push live heights to the GPU.
-    mapState.update(dt);
+    // Sim only while actively playing; the scene still renders behind overlays.
+    if (playing()) {
+      if (moveMode === "fly") cam.update(dt);
+      else walkStep(dt);
+      mapState.update(dt);
+    }
     world.setHeights(mapState.heights());
+    elCrosshair.hidden = !(playing() && mode === "world");
 
     const aspect = w / h;
     const colorView = gpu.context.getCurrentTexture().createView();
@@ -249,6 +294,10 @@ async function main() {
       `pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°  pitch ${((cam.pitch * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);
   }
+
+  // Everything is built — reveal the title (scene renders live behind it).
+  elLoading.hidden = true;
+  elTitle.hidden = false;
   requestAnimationFrame(render);
 }
 

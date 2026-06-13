@@ -38,9 +38,27 @@ export class Wad {
     }
   }
 
-  static async load(url: string): Promise<Wad> {
+  static async load(url: string, onProgress?: (fraction: number) => void): Promise<Wad> {
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`WAD fetch failed: ${resp.status} ${resp.statusText} for ${url}`);
+    const total = Number(resp.headers.get("content-length") ?? 0);
+    if (resp.body && onProgress) {
+      const reader = resp.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let received = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        onProgress(total > 0 ? received / total : 0);
+      }
+      const bytes = new Uint8Array(received);
+      let offset = 0;
+      for (const c of chunks) { bytes.set(c, offset); offset += c.length; }
+      onProgress(1);
+      return Wad.parse(bytes);
+    }
     return Wad.parse(new Uint8Array(await resp.arrayBuffer()));
   }
 

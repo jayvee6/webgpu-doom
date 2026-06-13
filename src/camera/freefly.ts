@@ -33,6 +33,10 @@ export class FreeFlyCamera {
     else this.keys.delete(code);
   }
 
+  onKeyClear(): void {
+    this.keys.clear();
+  }
+
   /** Desired horizontal move direction in MAP space (x,y), normalized; [0,0] if idle. */
   planarInput(): [number, number] {
     const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
