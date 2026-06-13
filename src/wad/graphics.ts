@@ -26,7 +26,7 @@ export function loadPalettes(wad: Wad): Palettes {
 }
 
 /** Return palette `index` as RGBA8 (1024 bytes), alpha forced to 255. */
-export function paletteRGBA(pal: Palettes, index = 0): Uint8Array {
+export function paletteRGBA(pal: Palettes, index = 0): Uint8Array<ArrayBuffer> {
   if (index < 0 || index >= pal.count) throw new Error(`Palette index ${index} out of range (0..${pal.count - 1})`);
   const base = index * BYTES_PER_PALETTE;
   const out = new Uint8Array(PALETTE_SIZE * 4);

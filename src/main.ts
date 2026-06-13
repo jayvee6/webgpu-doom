@@ -2,8 +2,10 @@ import { initGpu } from "./gpu/device";
 import { Wad } from "./wad/reader";
 import { loadMap, NF_SUBSECTOR, type DoomMap } from "./wad/maps";
 import { loadPalettes, paletteRGBA } from "./wad/graphics";
+import { TextureLib } from "./wad/textures";
 import { Wireframe } from "./render/wireframe";
 import { World } from "./render/world";
+import { TextureAtlas } from "./render/atlas";
 import { buildWalls } from "./geometry/walls";
 import { buildFlats } from "./geometry/flats";
 import { FreeFlyCamera } from "./camera/freefly";
@@ -56,15 +58,28 @@ async function main() {
   const basePalette = paletteRGBA(palettes, 0);
   const map = loadMap(wad, FIRST_MAP);
 
+  // Textures: collect every wall texture + flat the map references, then atlas them.
+  const texLib = new TextureLib(wad);
+  const usedNames = new Set<string>();
+  for (const sd of map.sidedefs) {
+    for (const n of [sd.upper, sd.lower, sd.middle]) if (n !== "-" && n !== "") usedNames.add(n);
+  }
+  for (const sec of map.sectors) { usedNames.add(sec.floorFlat); usedNames.add(sec.ceilFlat); }
+  const names = [...usedNames];
+  const atlas = new TextureAtlas(gpu.device, texLib, basePalette, names);
+  const tid = (name: string) => atlas.id(name);
+
   // Geometry: walls + floors/ceilings, concatenated into one vertex buffer.
-  const walls = buildWalls(map);
-  const flats = buildFlats(map);
+  const walls = buildWalls(map, tid);
+  const flats = buildFlats(map, tid);
   const mesh = new Float32Array(walls.data.length + flats.data.length);
   mesh.set(walls.data, 0);
   mesh.set(flats.data, walls.data.length);
   const totalVerts = walls.vertexCount + flats.vertexCount;
-  const world = new World(gpu.device, gpu.format, mesh, totalVerts);
+  const world = new World(gpu.device, gpu.format, mesh, totalVerts, atlas);
   const wireframe = new Wireframe(gpu.device, gpu.format, map);
+  console.log(`textures: ${names.length} names, atlas 2048×${atlas.atlasHeight}, ${atlas.missing.length} missing` +
+    (atlas.missing.length ? ` (${atlas.missing.slice(0, 12).join(", ")}${atlas.missing.length > 12 ? "…" : ""})` : ""));
   console.log(`geometry: ${walls.vertexCount} wall-verts + ${flats.vertexCount} flat-verts; ${flats.failedSectors} sectors failed triangulation`);
 
   // Camera at player-1 start, eye height above the floor it stands on.
@@ -125,7 +140,7 @@ async function main() {
     frame++; fpsN++;
     if (now - fpsT >= 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
     hud.textContent =
-      `webgpu-doom — M3 3D   [${mode}]  (M: toggle · click: mouselook · WASD+QE)\n` +
+      `webgpu-doom — M4 textured   [${mode}]  (M: toggle · click: mouselook · WASD+QE)\n` +
       `${map.name}  ${world.count} verts  ·  ${fps} fps\n` +
       `pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°  pitch ${((cam.pitch * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);

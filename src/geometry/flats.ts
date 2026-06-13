@@ -16,7 +16,9 @@
  * one-outer + holes sectors; pathological self-touching sectors may show minor
  * artifacts and are the trigger to upgrade to BSP-subsector reconstruction.
  *
- * Vertex layout matches walls: position xyz · normal xyz · light (7 f32).
+ * Vertex layout matches walls: position xyz · uv · light · texId (7 f32).
+ * Flat UVs are the absolute map (x,y) — Doom aligns flats to the world grid and
+ * tiles every 64 units; the shader handles the wrap.
  */
 
 import earcut from "earcut";
@@ -31,9 +33,11 @@ export interface FlatMesh {
   failedSectors: number;
 }
 
+export type TexId = (name: string) => number;
+
 type Edge = [number, number]; // [fromVertex, toVertex]
 
-export function buildFlats(map: DoomMap): FlatMesh {
+export function buildFlats(map: DoomMap, tid: TexId): FlatMesh {
   const out: number[] = [];
   let failedSectors = 0;
 
@@ -77,11 +81,14 @@ export function buildFlats(map: DoomMap): FlatMesh {
     const light = sec.light / 255;
     const doFloor = sec.floorFlat !== SKY_FLAT;
     const doCeil = sec.ceilFlat !== SKY_FLAT;
+    const floorTex = tid(sec.floorFlat);
+    const ceilTex = tid(sec.ceilFlat);
 
     for (let oi = 0; oi < outers.length; oi++) {
       const tri = triangulate(outers[oi]!, holesFor.get(oi) ?? [], map);
       if (!tri) continue;
-      emitFlat(out, tri.coords, tri.indices, tri.ring, map, sec.floorHeight, sec.ceilHeight, light, doFloor, doCeil);
+      emitFlat(out, tri.indices, tri.ring, map, sec.floorHeight, sec.ceilHeight, light,
+        doFloor && floorTex >= 0, doCeil && ceilTex >= 0, floorTex, ceilTex);
     }
   }
 
@@ -152,28 +159,29 @@ function triangulate(
 }
 
 function emitFlat(
-  out: number[], _coords: number[], indices: number[], ring: number[], map: DoomMap,
+  out: number[], indices: number[], ring: number[], map: DoomMap,
   floorH: number, ceilH: number, light: number, doFloor: boolean, doCeil: boolean,
+  floorTex: number, ceilTex: number,
 ): void {
   for (let i = 0; i < indices.length; i += 3) {
     const a = ring[indices[i]!]!, b = ring[indices[i + 1]!]!, c = ring[indices[i + 2]!]!;
     const pa = vertXY(map, a), pb = vertXY(map, b), pc = vertXY(map, c);
+    // UV = absolute map (x,y); cull disabled so winding is irrelevant.
     if (doFloor) {
-      // normal +Y; cull is disabled so winding is irrelevant.
-      pushV(out, pa[0], floorH, -pa[1], 0, 1, 0, light);
-      pushV(out, pb[0], floorH, -pb[1], 0, 1, 0, light);
-      pushV(out, pc[0], floorH, -pc[1], 0, 1, 0, light);
+      pushV(out, pa[0], floorH, -pa[1], pa[0], pa[1], light, floorTex);
+      pushV(out, pb[0], floorH, -pb[1], pb[0], pb[1], light, floorTex);
+      pushV(out, pc[0], floorH, -pc[1], pc[0], pc[1], light, floorTex);
     }
     if (doCeil) {
-      pushV(out, pa[0], ceilH, -pa[1], 0, -1, 0, light);
-      pushV(out, pb[0], ceilH, -pb[1], 0, -1, 0, light);
-      pushV(out, pc[0], ceilH, -pc[1], 0, -1, 0, light);
+      pushV(out, pa[0], ceilH, -pa[1], pa[0], pa[1], light, ceilTex);
+      pushV(out, pb[0], ceilH, -pb[1], pb[0], pb[1], light, ceilTex);
+      pushV(out, pc[0], ceilH, -pc[1], pc[0], pc[1], light, ceilTex);
     }
   }
 }
 
-function pushV(out: number[], x: number, y: number, z: number, nx: number, ny: number, nz: number, l: number): void {
-  out.push(x, y, z, nx, ny, nz, l);
+function pushV(out: number[], x: number, y: number, z: number, u: number, v: number, l: number, texId: number): void {
+  out.push(x, y, z, u, v, l, texId);
 }
 
 function vertXY(map: DoomMap, vi: number): [number, number] {

@@ -1,41 +1,49 @@
 /**
- * Build wall triangles from linedefs/sidedefs.
+ * Build textured wall triangles from linedefs/sidedefs.
  *
  * World mapping: worldPos = (map.x, height, -map.y).
  * Per linedef:
- *   - one-sided  → one solid wall, front sector floor → ceiling
- *   - two-sided  → a "lower" step quad between the two floor heights, and an
- *                  "upper" step quad between the two ceiling heights (each only
- *                  if the heights differ). Middle (mid-texture) skipped for now.
- * Each step is emitted once per linedef (spanning min..max of the pair) so the
- * two sidedefs don't double-draw it.
+ *   - one-sided  → one solid wall (middle texture), front floor → ceiling
+ *   - two-sided  → "lower" step (lower texture of the side with the lower floor)
+ *                  and "upper" step (upper texture of the side with the higher
+ *                  ceiling), each emitted once. Middle (mid-texture) skipped.
  *
- * Vertex layout (7 f32, 28-byte stride): position xyz · normal xyz · light.
+ * Texture coords: U runs along the wall in map units (+ sidedef xOffset); V runs
+ * downward from the region's top (+ yOffset). Pegging flags are approximated
+ * (top-aligned) for now. Per-wall "fake contrast" (Doom's faked directional
+ * shading) is baked into the light value.
+ *
+ * Vertex layout: position xyz · uv · light · texId (7 f32, 28-byte stride).
  */
 
-import type { DoomMap, Sector, Vertex } from "../wad/maps";
+import type { DoomMap, Sector, Sidedef, Vertex } from "../wad/maps";
 
 export interface WallMesh {
   data: Float32Array<ArrayBuffer>;
   vertexCount: number;
 }
 
-export function buildWalls(map: DoomMap): WallMesh {
+export type TexId = (name: string) => number;
+
+export function buildWalls(map: DoomMap, tid: TexId): WallMesh {
   const out: number[] = [];
 
-  const quad = (a: Vertex, b: Vertex, yBottom: number, yTop: number, light: number): void => {
-    if (yTop <= yBottom) return;
-    // Wall normal: perpendicular to the edge in the XZ plane.
-    let nx = -(b.y - a.y); // = world dz direction component
-    let nz = -(b.x - a.x);
-    const nl = Math.hypot(nx, nz) || 1;
-    nx /= nl; nz /= nl;
+  const quad = (
+    a: Vertex, b: Vertex, yBottom: number, yTop: number,
+    light: number, texId: number, xOff: number, yOff: number,
+  ): void => {
+    if (yTop <= yBottom || texId < 0) return;
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    const uA = xOff, uB = xOff + len;
+    const vAt = (h: number) => yOff + (yTop - h);
     const ax = a.x, az = -a.y, bx = b.x, bz = -b.y;
-    // Two triangles: (Ab, Bb, Bt) and (Ab, Bt, At)
-    const Ab = [ax, yBottom, az], Bb = [bx, yBottom, bz];
-    const At = [ax, yTop, az], Bt = [bx, yTop, bz];
-    pushTri(out, Ab, Bb, Bt, nx, nz, light);
-    pushTri(out, Ab, Bt, At, nx, nz, light);
+    // corners: position + uv
+    const Ab = [ax, yBottom, az, uA, vAt(yBottom)];
+    const Bb = [bx, yBottom, bz, uB, vAt(yBottom)];
+    const At = [ax, yTop, az, uA, vAt(yTop)];
+    const Bt = [bx, yTop, bz, uB, vAt(yTop)];
+    pushTri(out, Ab, Bb, Bt, light, texId);
+    pushTri(out, Ab, Bt, At, light, texId);
   };
 
   for (const ld of map.linedefs) {
@@ -43,27 +51,35 @@ export function buildWalls(map: DoomMap): WallMesh {
     const b = map.vertexes[ld.v2];
     if (!a || !b) continue;
 
-    const frontSec: Sector | undefined = ld.right >= 0 ? map.sectors[map.sidedefs[ld.right]!.sector] : undefined;
-    const backSec: Sector | undefined = ld.left >= 0 ? map.sectors[map.sidedefs[ld.left]!.sector] : undefined;
+    const frontSide: Sidedef | undefined = ld.right >= 0 ? map.sidedefs[ld.right] : undefined;
+    const backSide: Sidedef | undefined = ld.left >= 0 ? map.sidedefs[ld.left] : undefined;
+    const frontSec: Sector | undefined = frontSide ? map.sectors[frontSide.sector] : undefined;
+    const backSec: Sector | undefined = backSide ? map.sectors[backSide.sector] : undefined;
 
-    if (frontSec && !backSec) {
-      quad(a, b, frontSec.floorHeight, frontSec.ceilHeight, frontSec.light / 255);
-    } else if (backSec && !frontSec) {
-      quad(a, b, backSec.floorHeight, backSec.ceilHeight, backSec.light / 255);
-    } else if (frontSec && backSec) {
-      // lower step
+    // Fake contrast: E-W lines brighter, N-S lines darker.
+    const contrast = b.y - a.y === 0 ? 0.08 : b.x - a.x === 0 ? -0.08 : 0;
+    const lit = (sec: Sector) => Math.max(0, Math.min(1, sec.light / 255 + contrast));
+
+    if (frontSec && !backSec && frontSide) {
+      quad(a, b, frontSec.floorHeight, frontSec.ceilHeight, lit(frontSec), tid(frontSide.middle), frontSide.xOffset, frontSide.yOffset);
+    } else if (backSec && !frontSec && backSide) {
+      quad(a, b, backSec.floorHeight, backSec.ceilHeight, lit(backSec), tid(backSide.middle), backSide.xOffset, backSide.yOffset);
+    } else if (frontSec && backSec && frontSide && backSide) {
+      // lower step: textured by the side standing in the lower-floored sector
       if (frontSec.floorHeight !== backSec.floorHeight) {
         const lo = Math.min(frontSec.floorHeight, backSec.floorHeight);
         const hi = Math.max(frontSec.floorHeight, backSec.floorHeight);
-        const lit = (frontSec.floorHeight < backSec.floorHeight ? frontSec : backSec).light / 255;
-        quad(a, b, lo, hi, lit);
+        const lowSide = frontSec.floorHeight < backSec.floorHeight ? frontSide : backSide;
+        const lowSec = frontSec.floorHeight < backSec.floorHeight ? frontSec : backSec;
+        quad(a, b, lo, hi, lit(lowSec), tid(lowSide.lower), lowSide.xOffset, lowSide.yOffset);
       }
-      // upper step
+      // upper step: textured by the side standing in the higher-ceilinged sector
       if (frontSec.ceilHeight !== backSec.ceilHeight) {
         const lo = Math.min(frontSec.ceilHeight, backSec.ceilHeight);
         const hi = Math.max(frontSec.ceilHeight, backSec.ceilHeight);
-        const lit = (frontSec.ceilHeight > backSec.ceilHeight ? frontSec : backSec).light / 255;
-        quad(a, b, lo, hi, lit);
+        const hiSide = frontSec.ceilHeight > backSec.ceilHeight ? frontSide : backSide;
+        const hiSec = frontSec.ceilHeight > backSec.ceilHeight ? frontSec : backSec;
+        quad(a, b, lo, hi, lit(hiSec), tid(hiSide.upper), hiSide.xOffset, hiSide.yOffset);
       }
     }
   }
@@ -71,12 +87,8 @@ export function buildWalls(map: DoomMap): WallMesh {
   return { data: new Float32Array(out), vertexCount: out.length / 7 };
 }
 
-function pushTri(
-  out: number[],
-  p0: number[], p1: number[], p2: number[],
-  nx: number, nz: number, light: number,
-): void {
+function pushTri(out: number[], p0: number[], p1: number[], p2: number[], light: number, texId: number): void {
   for (const p of [p0, p1, p2]) {
-    out.push(p[0]!, p[1]!, p[2]!, nx, 0, nz, light);
+    out.push(p[0]!, p[1]!, p[2]!, p[3]!, p[4]!, light, texId);
   }
 }
