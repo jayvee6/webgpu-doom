@@ -146,6 +146,11 @@ export class Wireframe {
     this.device.queue.writeBuffer(this.ubuf, 0, new Float32Array([cx, cy, scale, aspect]));
   }
 
+  dispose(): void {
+    this.vbuf.destroy();
+    this.ubuf.destroy();
+  }
+
   draw(pass: GPURenderPassEncoder): void {
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.bindGroup);

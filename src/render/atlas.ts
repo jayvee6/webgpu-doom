@@ -15,6 +15,11 @@ export class TextureAtlas {
   private readonly ids = new Map<string, number>();
   readonly missing: string[] = [];
   readonly atlasHeight: number;
+  private readonly resources: { destroy(): void }[] = [];
+
+  dispose(): void {
+    for (const r of this.resources) r.destroy();
+  }
 
   /** Stable texture id for a name (walls + flats share the id space). -1 if absent. */
   id(name: string): number {
@@ -93,6 +98,7 @@ export class TextureAtlas {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(rectsBuf, 0, rects);
+    this.resources.push(atlasTex, paletteTex, rectsBuf);
 
     this.layout = device.createBindGroupLayout({
       label: "atlas-bgl",

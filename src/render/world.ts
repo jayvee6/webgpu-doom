@@ -224,4 +224,13 @@ export class World {
   depthView(): GPUTextureView {
     return this.ensureDepth(this.depthW, this.depthH);
   }
+
+  dispose(): void {
+    this.vbuf.destroy();
+    this.ibuf.destroy();
+    this.ubuf.destroy();
+    this.hbuf.destroy();
+    this.slbuf.destroy();
+    this.depth?.destroy();
+  }
 }

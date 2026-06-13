@@ -1,6 +1,6 @@
 import { initGpu } from "./gpu/device";
 import { Wad } from "./wad/reader";
-import { loadMap } from "./wad/maps";
+import { loadMap, type DoomMap } from "./wad/maps";
 import { locateSector } from "./wad/bsp";
 import { blocked, distSqPointSeg } from "./game/collision";
 import { MapState, USABLE, WALKOVER } from "./game/specials";
@@ -27,6 +27,7 @@ import { invert, type Vec3 } from "./math/mat4";
 
 const WAD_URL = "/freedoom1.wad";
 const FIRST_MAP = "E1M1";
+const SKY_TEX = "SKY1"; // sky texture, packed into the atlas for the sky pass
 const EYE_HEIGHT = 41;
 
 const hud = document.getElementById("hud") as HTMLDivElement;
@@ -34,6 +35,7 @@ const $ = (id: string) => document.getElementById(id)!;
 const elLoading = $("loading"), elTitle = $("title"), elErr = $("err");
 const elLoadFill = $("load-fill"), elLoadLabel = $("load-label");
 const elErrMsg = $("err-msg"), elCta = $("cta"), elCrosshair = $("crosshair");
+const elInter = $("intermission"), elInterDone = $("inter-done"), elInterStats = $("inter-stats"), elInterCta = $("inter-cta");
 
 function showError(message: string): never {
   elLoading.hidden = true; elTitle.hidden = true;
@@ -96,81 +98,130 @@ async function main() {
   const palettes = loadPalettes(wad);
   const basePalette = paletteRGBA(palettes, 0);
   const litPalette = buildLitPalette(wad, palettes); // 256×32 palette × colormap LUT
-  const map = loadMap(wad, FIRST_MAP);
 
-  // Textures: collect every wall texture + flat the map references, then atlas them.
+  // WAD-global resources, shared across all levels.
   const texLib = new TextureLib(wad);
-  const usedNames = new Set<string>();
-  for (const sd of map.sidedefs) {
-    for (const n of [sd.upper, sd.lower, sd.middle]) if (n !== "-" && n !== "") usedNames.add(n);
-  }
-  for (const sec of map.sectors) { usedNames.add(sec.floorFlat); usedNames.add(sec.ceilFlat); }
-  const SKY_TEX = "SKY1"; // E1 sky texture; packed so the sky pass can sample it
-  if (texLib.texture(SKY_TEX)) usedNames.add(SKY_TEX);
-  const names = [...usedNames];
-  const atlas = new TextureAtlas(gpu.device, texLib, litPalette, names);
-  const tid = (name: string) => atlas.id(name);
-  const sky = new Sky(gpu.device, gpu.format, atlas, atlas.id(SKY_TEX));
-
-  // Geometry: walls + floors/ceilings, merged into one indexed mesh.
-  const walls = buildWalls(map, tid);
-  const flats = buildFlats(map, tid);
-  const mesh = new Float32Array(walls.vertices.length + flats.vertices.length);
-  mesh.set(walls.vertices, 0);
-  mesh.set(flats.vertices, walls.vertices.length);
-  const wallVertCount = walls.vertices.length / 10;
-  const indices = new Uint32Array(walls.indices.length + flats.indices.length);
-  indices.set(walls.indices, 0);
-  for (let i = 0; i < flats.indices.length; i++) indices[walls.indices.length + i] = flats.indices[i]! + wallVertCount;
-  const world = new World(gpu.device, gpu.format, mesh, indices, atlas, map.sectors.length * 2);
-  const wireframe = new Wireframe(gpu.device, gpu.format, map);
-
-  // Animated sector lighting (flicker / strobe specials).
-  const lights = new LightState(map);
-
-  // Line specials (doors / lifts / moving floors / exit) drive live sector heights.
-  const mapState = new MapState(map);
-  let exited = false;
-  mapState.onExit = () => {
-    if (exited) return;
-    exited = true;
-    const o = document.createElement("div");
-    o.style.cssText = "position:fixed;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.78);" +
-      "font:bold 42px ui-monospace,monospace;color:#6f6;text-shadow:0 0 12px #0f0;z-index:9";
-    o.textContent = "LEVEL COMPLETE";
-    document.body.appendChild(o);
-  };
-  world.setHeights(mapState.heights());
-
-  // Game state: build entities (THINGS) and the collision broadphase.
   const spriteLib = new SpriteLib(wad);
-  const state = new GameState(map, spriteLib);
-  const blockmap = new Blockmap(map);
-  const sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, state.spriteLumps(), litPalette, state.entities.length);
-  console.log(`textures: ${names.length} names, atlas 2048×${atlas.atlasHeight}, ${atlas.missing.length} missing` +
-    (atlas.missing.length ? ` (${atlas.missing.slice(0, 12).join(", ")}${atlas.missing.length > 12 ? "…" : ""})` : ""));
-  console.log(`geometry: ${mesh.length / 10} verts, ${indices.length} indices (${indices.length / 3} tris); ${flats.failedSectors} sectors failed`);
-  console.log(`entities: ${state.entities.length} (${state.unmappedTypes} unmapped types, ${sprites.missing.length} missing sprite lumps)`);
-  const monsterTotal = state.entities.filter((e) => e.kind === "monster").length;
-  const aliveMonsters = () => state.entities.reduce((n, e) => n + (e.kind === "monster" && e.mstate !== "dead" ? 1 : 0), 0);
-
-  // First-person weapon overlay (Canvas2D).
   const weaponCanvas = $("weapon") as HTMLCanvasElement;
   const weapon = new WeaponHUD(weaponCanvas, wad, basePalette);
-
-  // Audio: SFX for combat / doors / monsters / pickups.
   const sound = new SoundSystem(wad);
-  mapState.onSound = (name, x, y) => sound.play(name, x, y);
+  const cam = new FreeFlyCamera([0, EYE_HEIGHT, 0], 0);
+  // Player stats carried between levels (keys reset each level).
+  const carried = { health: 100, armor: 0, ammo: { bul: 50, shl: 0, rck: 0, cel: 0 } };
 
-  // Camera at player-1 start, eye height above the floor it stands on.
-  const p1 = map.things.find((t) => t.type === 1);
-  const startX = p1 ? p1.x : 0;
-  const startY = p1 ? p1.y : 0;
-  const startSector = locateSector(map, startX, startY);
-  const floorH = startSector >= 0 ? map.sectors[startSector]!.floorHeight : 0;
-  const startPos: Vec3 = [startX, floorH + EYE_HEIGHT, -startY];
-  const startYaw = p1 ? Math.PI / 2 - (p1.angle * Math.PI) / 180 : 0;
-  const cam = new FreeFlyCamera(startPos, startYaw);
+  // Per-level objects (rebuilt by buildLevel).
+  let currentMap = FIRST_MAP;
+  let map!: DoomMap;
+  let atlas!: TextureAtlas;
+  let sky!: Sky;
+  let world!: World;
+  let wireframe!: Wireframe;
+  let lights!: LightState;
+  let mapState!: MapState;
+  let state!: GameState;
+  let blockmap!: Blockmap;
+  let sprites!: SpriteRenderer;
+  let startPos: Vec3 = [0, EYE_HEIGHT, 0];
+  let monsterTotal = 0;
+  let itemTotal = 0;
+  const aliveMonsters = () => state.entities.reduce((n, e) => n + (e.kind === "monster" && e.mstate !== "dead" ? 1 : 0), 0);
+  const itemsTaken = () => itemTotal - state.entities.reduce((n, e) => n + (e.kind === "item" && e.active ? 1 : 0), 0);
+
+  function buildLevel(name: string): void {
+    // Free the previous level's GPU resources.
+    world?.dispose(); sky?.dispose(); wireframe?.dispose(); sprites?.dispose(); atlas?.dispose();
+
+    currentMap = name;
+    map = loadMap(wad, name);
+
+    // Atlas of every texture/flat this map uses (+ sky).
+    const usedNames = new Set<string>();
+    for (const sd of map.sidedefs) for (const n of [sd.upper, sd.lower, sd.middle]) if (n !== "-" && n !== "") usedNames.add(n);
+    for (const sec of map.sectors) { usedNames.add(sec.floorFlat); usedNames.add(sec.ceilFlat); }
+    if (texLib.texture(SKY_TEX)) usedNames.add(SKY_TEX);
+    atlas = new TextureAtlas(gpu.device, texLib, litPalette, [...usedNames]);
+    const tid = (n: string) => atlas.id(n);
+    sky = new Sky(gpu.device, gpu.format, atlas, atlas.id(SKY_TEX));
+
+    // Geometry → indexed mesh → world.
+    const walls = buildWalls(map, tid);
+    const flats = buildFlats(map, tid);
+    const mesh = new Float32Array(walls.vertices.length + flats.vertices.length);
+    mesh.set(walls.vertices, 0);
+    mesh.set(flats.vertices, walls.vertices.length);
+    const wallVertCount = walls.vertices.length / 10;
+    const indices = new Uint32Array(walls.indices.length + flats.indices.length);
+    indices.set(walls.indices, 0);
+    for (let i = 0; i < flats.indices.length; i++) indices[walls.indices.length + i] = flats.indices[i]! + wallVertCount;
+    world = new World(gpu.device, gpu.format, mesh, indices, atlas, map.sectors.length * 2);
+    wireframe = new Wireframe(gpu.device, gpu.format, map);
+
+    lights = new LightState(map);
+    mapState = new MapState(map);
+    mapState.onSound = (n, x, y) => sound.play(n, x, y);
+    mapState.onExit = onLevelExit;
+    world.setHeights(mapState.heights());
+    world.setSectorLights(lights.lights());
+
+    // Entities, collision, sprites; carry the player's stats forward.
+    state = new GameState(map, spriteLib);
+    state.player.health = carried.health;
+    state.player.armor = carried.armor;
+    state.player.ammo = { ...carried.ammo };
+    blockmap = new Blockmap(map);
+    sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, state.spriteLumps(), litPalette, Math.max(1, state.entities.length));
+    monsterTotal = state.entities.filter((e) => e.kind === "monster").length;
+    itemTotal = state.entities.filter((e) => e.kind === "item").length;
+
+    // Camera at player-1 start, eye above the floor it stands on.
+    const p1 = map.things.find((t) => t.type === 1);
+    const sx = p1 ? p1.x : 0, sy = p1 ? p1.y : 0;
+    const sec = locateSector(map, sx, sy);
+    const fh = sec >= 0 ? map.sectors[sec]!.floorHeight : 0;
+    startPos = [sx, fh + EYE_HEIGHT, -sy];
+    cam.pos[0] = startPos[0]; cam.pos[1] = startPos[1]; cam.pos[2] = startPos[2];
+    cam.yaw = p1 ? Math.PI / 2 - (p1.angle * Math.PI) / 180 : 0;
+    cam.pitch = 0; cam.vz = 0; cam.onKeyClear();
+
+    console.log(`${name}: ${state.entities.length} entities, ${monsterTotal} monsters, atlas 2048×${atlas.atlasHeight}`);
+  }
+
+  buildLevel(FIRST_MAP);
+
+  // Campaign progression: E1M1 → … → E4M9, then "campaign complete".
+  const MAP_ORDER: string[] = [];
+  for (let e = 1; e <= 4; e++) for (let m = 1; m <= 9; m++) MAP_ORDER.push(`E${e}M${m}`);
+  function nextMapName(cur: string): string | null {
+    const i = MAP_ORDER.indexOf(cur);
+    return i >= 0 && i + 1 < MAP_ORDER.length ? MAP_ORDER[i + 1]! : null;
+  }
+
+  let levelDone = false;
+  function onLevelExit(): void {
+    if (levelDone) return;
+    levelDone = true;
+    carried.health = state.player.health;
+    carried.armor = state.player.armor;
+    carried.ammo = { ...state.player.ammo };
+    // Intermission screen with the level's stats.
+    elInterDone.textContent = `${currentMap} COMPLETE`;
+    const row = (label: string, val: string) => `<tr><td style="text-align:right;color:var(--fg-dim)">${label}</td><td style="text-align:left;font-weight:700">${val}</td></tr>`;
+    elInterStats.innerHTML =
+      row("KILLS", `${monsterTotal - aliveMonsters()} / ${monsterTotal}`) +
+      row("ITEMS", `${itemsTaken()} / ${itemTotal}`) +
+      row("NEXT", nextMapName(currentMap) ?? "—");
+    elInter.hidden = false;
+    document.exitPointerLock();
+  }
+  function nextLevel(): void {
+    elInter.hidden = true;
+    levelDone = false;
+    const next = nextMapName(currentMap);
+    if (!next) { showMessage("CAMPAIGN COMPLETE", "#7dff8a"); return; }
+    buildLevel(next);
+    enter();
+  }
+  elInterCta.addEventListener("click", nextLevel);
 
   let mode: "world" | "automap" = "world";
   let moveMode: "walk" | "fly" = "walk";
@@ -182,7 +233,7 @@ async function main() {
   // denied lock leaves the title up to retry rather than stranding the player.
   function enter(): void {
     sound.resume(); // user gesture — unlock the AudioContext
-    void canvas.requestPointerLock();
+    Promise.resolve(canvas.requestPointerLock()).catch(() => { /* lock denied — title stays up */ });
   }
   elCta.addEventListener("click", enter);
   canvas.addEventListener("click", () => { if (started && !playing()) enter(); });
@@ -190,7 +241,7 @@ async function main() {
     if (playing()) {
       started = true;
       elTitle.hidden = true;
-    } else if (started) {
+    } else if (started && elInter.hidden) {
       cam.onKeyClear();
       const cta = elCta as HTMLElement;
       cta.textContent = "CLICK TO RESUME";

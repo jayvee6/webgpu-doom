@@ -92,6 +92,8 @@ export class SpriteRenderer {
   private readonly frameBG: GPUBindGroup;
   private readonly dataBG: GPUBindGroup;
   private readonly instBuf: GPUBuffer;
+  private atlasTex!: GPUTexture;
+  private litTex!: GPUTexture;
   private readonly maxInstances: number;
   /** lump → atlas placement + offsets, for per-frame instance building. */
   private readonly rects = new Map<string, { ox: number; oy: number; w: number; h: number; lo: number; to: number }>();
@@ -156,6 +158,8 @@ export class SpriteRenderer {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     device.queue.writeTexture({ texture: litTex }, litPalette, { bytesPerRow: 256 * 4, rowsPerImage: 32 }, { width: 256, height: 32 });
+    this.atlasTex = atlasTex;
+    this.litTex = litTex;
 
     // Record each lump's atlas placement + offsets for per-frame instancing.
     for (const lump of lumps) {
@@ -238,6 +242,13 @@ export class SpriteRenderer {
     }
     this.instanceCount = n;
     if (n > 0) this.device.queue.writeBuffer(this.instBuf, 0, s, 0, n * FLOATS_PER_INST);
+  }
+
+  dispose(): void {
+    this.instBuf.destroy();
+    this.ubuf.destroy();
+    this.atlasTex.destroy();
+    this.litTex.destroy();
   }
 
   render(encoder: GPUCommandEncoder, colorView: GPUTextureView, depthView: GPUTextureView): void {

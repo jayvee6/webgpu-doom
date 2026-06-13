@@ -88,6 +88,10 @@ export class Sky {
     });
   }
 
+  dispose(): void {
+    this.ubuf.destroy();
+  }
+
   setFrame(invVP: Float32Array<ArrayBuffer>, camPos: readonly [number, number, number]): void {
     const buf = new Float32Array(20);
     buf.set(invVP, 0);
