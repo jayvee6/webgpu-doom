@@ -1,81 +1,133 @@
 import { initGpu } from "./gpu/device";
 import { Wad } from "./wad/reader";
-import { loadMap } from "./wad/maps";
+import { loadMap, NF_SUBSECTOR, type DoomMap } from "./wad/maps";
 import { loadPalettes, paletteRGBA } from "./wad/graphics";
 import { Wireframe } from "./render/wireframe";
+import { World } from "./render/world";
+import { buildWalls } from "./geometry/walls";
+import { buildFlats } from "./geometry/flats";
+import { FreeFlyCamera } from "./camera/freefly";
+import type { Vec3 } from "./math/mat4";
 
 const WAD_URL = "/freedoom1.wad";
 const FIRST_MAP = "E1M1";
+const EYE_HEIGHT = 41;
 
 const hud = document.getElementById("hud") as HTMLDivElement;
 const errBox = document.getElementById("err") as HTMLDivElement;
 
 function fatal(e: unknown): never {
-  const msg = e instanceof Error ? e.stack ?? e.message : String(e);
+  const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
   errBox.style.display = "grid";
   errBox.textContent = `webgpu-doom failed to start\n\n${msg}`;
   throw e;
+}
+
+/** Descend the BSP to the subsector containing (x,y); return its sector index, or -1. */
+function locateSector(map: DoomMap, x: number, y: number): number {
+  if (map.nodes.length === 0) return -1;
+  let nodeIdx = map.nodes.length - 1;
+  for (let guard = 0; guard < 256; guard++) {
+    const node = map.nodes[nodeIdx]!;
+    const cross = node.dx * (y - node.y) - node.dy * (x - node.x);
+    const child = cross <= 0 ? node.rightChild : node.leftChild;
+    if (child & NF_SUBSECTOR) {
+      const ss = map.subsectors[child & 0x7fff];
+      if (!ss) return -1;
+      const seg = map.segs[ss.firstSeg];
+      if (!seg) return -1;
+      const ld = map.linedefs[seg.linedef];
+      if (!ld) return -1;
+      const sideIdx = seg.side === 0 ? ld.right : ld.left;
+      if (sideIdx < 0) return -1;
+      return map.sidedefs[sideIdx]!.sector;
+    }
+    nodeIdx = child;
+  }
+  return -1;
 }
 
 async function main() {
   const canvas = document.getElementById("gfx") as HTMLCanvasElement;
   const gpu = await initGpu(canvas).catch(fatal);
 
-  // M1 — parse the WAD (lump directory), the base palette, and the first map.
   const wad = await Wad.load(WAD_URL).catch(fatal);
   const palettes = loadPalettes(wad);
   const basePalette = paletteRGBA(palettes, 0);
   const map = loadMap(wad, FIRST_MAP);
 
-  // M2 — 2D wireframe of the map's linedefs.
+  // Geometry: walls + floors/ceilings, concatenated into one vertex buffer.
+  const walls = buildWalls(map);
+  const flats = buildFlats(map);
+  const mesh = new Float32Array(walls.data.length + flats.data.length);
+  mesh.set(walls.data, 0);
+  mesh.set(flats.data, walls.data.length);
+  const totalVerts = walls.vertexCount + flats.vertexCount;
+  const world = new World(gpu.device, gpu.format, mesh, totalVerts);
   const wireframe = new Wireframe(gpu.device, gpu.format, map);
+  console.log(`geometry: ${walls.vertexCount} wall-verts + ${flats.vertexCount} flat-verts; ${flats.failedSectors} sectors failed triangulation`);
 
-  // Expose a debug surface for headless drive (devtools / preview_eval).
-  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, wireframe };
+  // Camera at player-1 start, eye height above the floor it stands on.
+  const p1 = map.things.find((t) => t.type === 1);
+  const startX = p1 ? p1.x : 0;
+  const startY = p1 ? p1.y : 0;
+  const startSector = locateSector(map, startX, startY);
+  const floorH = startSector >= 0 ? map.sectors[startSector]!.floorHeight : 0;
+  const startPos: Vec3 = [startX, floorH + EYE_HEIGHT, -startY];
+  const startYaw = p1 ? Math.PI / 2 - (p1.angle * Math.PI) / 180 : 0;
+  const cam = new FreeFlyCamera(startPos, startYaw);
 
-  // Map bounds (useful sanity signal: E1M1 should span a few thousand units).
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const v of map.vertexes) {
-    if (v.x < minX) minX = v.x;
-    if (v.y < minY) minY = v.y;
-    if (v.x > maxX) maxX = v.x;
-    if (v.y > maxY) maxY = v.y;
-  }
+  let mode: "world" | "automap" = "world";
 
-  let frame = 0;
+  // Input
+  addEventListener("keydown", (e) => {
+    if (e.code === "KeyM") { mode = mode === "world" ? "automap" : "world"; return; }
+    cam.onKey(e.code, true);
+  });
+  addEventListener("keyup", (e) => cam.onKey(e.code, false));
+  canvas.addEventListener("click", () => canvas.requestPointerLock());
+  addEventListener("mousemove", (e) => {
+    if (document.pointerLockElement === canvas) cam.onMouse(e.movementX, e.movementY);
+  });
+
+  (window as unknown as { __doom: unknown }).__doom = { gpu, wad, palettes, basePalette, map, world, wireframe, cam };
+
   let lastW = 0, lastH = 0;
-  function render() {
-    if (gpu.resize()) gpu.context.configure({ device: gpu.device, format: gpu.format, alphaMode: "opaque" });
-    if (canvas.width !== lastW || canvas.height !== lastH) {
-      lastW = canvas.width; lastH = canvas.height;
-      wireframe.setView(canvas.width, canvas.height);
-    }
+  let prev = performance.now();
+  let frame = 0, fps = 0, fpsT = prev, fpsN = 0;
 
+  function render(now: number) {
+    const dt = Math.min((now - prev) / 1000, 0.05);
+    prev = now;
+
+    if (gpu.resize()) gpu.context.configure({ device: gpu.device, format: gpu.format, alphaMode: "opaque" });
+    const w = canvas.width, h = canvas.height;
+    if (w !== lastW || h !== lastH) { lastW = w; lastH = h; wireframe.setView(w, h); }
+
+    cam.update(dt);
+    const aspect = w / h;
+    const colorView = gpu.context.getCurrentTexture().createView();
     const encoder = gpu.device.createCommandEncoder({ label: "frame" });
-    const pass = encoder.beginRenderPass({
-      label: "wireframe",
-      colorAttachments: [
-        {
-          view: gpu.context.getCurrentTexture().createView(),
-          // Doom-ish dark wine clear so a blank screen is obviously "running, nothing drawn yet".
-          clearValue: { r: 0.06, g: 0.01, b: 0.02, a: 1 },
-          loadOp: "clear",
-          storeOp: "store",
-        },
-      ],
-    });
-    wireframe.draw(pass);
-    pass.end();
+
+    if (mode === "world") {
+      world.setViewProj(cam.viewProj(aspect));
+      world.render(encoder, colorView, w, h);
+    } else {
+      const pass = encoder.beginRenderPass({
+        label: "automap",
+        colorAttachments: [{ view: colorView, clearValue: { r: 0.06, g: 0.01, b: 0.02, a: 1 }, loadOp: "clear", storeOp: "store" }],
+      });
+      wireframe.draw(pass);
+      pass.end();
+    }
     gpu.device.queue.submit([encoder.finish()]);
 
-    frame++;
+    frame++; fpsN++;
+    if (now - fpsT >= 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
     hud.textContent =
-      `webgpu-doom — M2 wireframe\n` +
-      `${wad.type}  ${wad.lumps.length} lumps  ·  palettes ${palettes.count}\n` +
-      `${map.name}: ${map.vertexes.length} verts  ${map.linedefs.length} lines  ${map.sidedefs.length} sides\n` +
-      `         ${map.sectors.length} sectors  ${map.segs.length} segs  ${map.subsectors.length} ssec  ${map.nodes.length} nodes  ${map.things.length} things\n` +
-      `bounds  x[${minX}..${maxX}]  y[${minY}..${maxY}]\n` +
-      `format ${gpu.format}  ·  canvas ${canvas.width}×${canvas.height}  ·  frame ${frame}`;
+      `webgpu-doom — M3 3D   [${mode}]  (M: toggle · click: mouselook · WASD+QE)\n` +
+      `${map.name}  ${world.count} verts  ·  ${fps} fps\n` +
+      `pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°  pitch ${((cam.pitch * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);
   }
   requestAnimationFrame(render);
