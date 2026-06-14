@@ -365,9 +365,7 @@ async function main() {
   let respawnTimer = 0;
   function fire(): void {
     if (fireCd > 0 || state.player.dead || mode !== "world") return;
-    if (state.player.ammo.bul <= 0) return; // out of bullets
     fireCd = 0.16;
-    state.player.ammo.bul--;
     weapon.onFire();
     sound.play("DSPISTOL");
     const hit = fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.pos[1], cam.yaw, cam.pitch);
