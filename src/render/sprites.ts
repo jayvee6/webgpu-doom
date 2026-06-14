@@ -12,7 +12,7 @@ import { createCheckedModule } from "../gpu/shader";
 
 const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
 const ATLAS_W = 2048;
-const FLOATS_PER_INST = 11;
+const FLOATS_PER_INST = 12;
 
 export interface SpriteRequest {
   lump: string;
@@ -20,6 +20,8 @@ export interface SpriteRequest {
   y: number;
   floor: number;
   light: number;
+  /** True for dead-monster corpses: render as a horizontal floor decal instead of a vertical billboard. */
+  onFloor?: boolean;
 }
 
 const WGSL = /* wgsl */ `
@@ -30,6 +32,7 @@ struct Inst {
   cx : f32, cy : f32, cz : f32,
   halfW : f32, halfH : f32, hoff : f32, light : f32,
   ox : f32, oy : f32, w : f32, h : f32,
+  onFloor : f32, // 0 = vertical billboard, 1 = horizontal floor decal
 };
 @group(1) @binding(0) var<storage, read> insts : array<Inst>;
 @group(1) @binding(1) var sprTex : texture_2d<u32>;   // RG8: r=palette index, g=mask
@@ -60,9 +63,17 @@ fn vs(@builtin(vertex_index) vi : u32, @builtin(instance_index) ii : u32) -> VSO
   let c = corners[vi];
   let inst = insts[ii];
   let right = frame.camRight;
-  let up = vec3f(0.0, 1.0, 0.0);
+  // Vertical billboard: right × worldUp.
+  // Floor decal (dead corpses): right × camera-forward-on-ground so the decal
+  // rotates with the viewer and is always visible. camRight=(sin,0,cos), so
+  // camera-forward-on-ground = cross(worldUp, camRight) = (-camRight.z, 0, camRight.x).
+  let axisV = select(
+    vec3f(0.0, 1.0, 0.0),
+    vec3f(-frame.camRight.z, 0.0, frame.camRight.x),
+    inst.onFloor > 0.5,
+  );
   let center = vec3f(inst.cx, inst.cy, inst.cz);
-  let world = center + (c.x * inst.halfW + inst.hoff) * right + (c.y * inst.halfH) * up;
+  let world = center + (c.x * inst.halfW + inst.hoff) * right + (c.y * inst.halfH) * axisV;
 
   var o : VSOut;
   o.clip = frame.vp * vec4f(world, 1.0);
@@ -229,8 +240,11 @@ export class SpriteRenderer {
       const rect = this.rects.get(r.lump);
       if (!rect) continue;
       const o = n * FLOATS_PER_INST;
+      const onFloor = r.onFloor ? 1 : 0;
       s[o] = r.x;
-      s[o + 1] = r.floor + rect.to - rect.h / 2; // center y (feet + topoffset - h/2)
+      // Floor decals: cy = floor + 1 (flat on ground, +1 avoids z-fighting).
+      // Billboards: cy = floor + topOffset - halfH (vertical center).
+      s[o + 1] = onFloor ? r.floor + 1 : r.floor + rect.to - rect.h / 2;
       s[o + 2] = -r.y;
       s[o + 3] = rect.w / 2;
       s[o + 4] = rect.h / 2;
@@ -240,6 +254,7 @@ export class SpriteRenderer {
       s[o + 8] = rect.oy;
       s[o + 9] = rect.w;
       s[o + 10] = rect.h;
+      s[o + 11] = onFloor;
       n++;
     }
     this.instanceCount = n;

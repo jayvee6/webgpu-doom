@@ -105,7 +105,7 @@ function updateMonster(e: Entity, ai: MonsterAI, dt: number, ctx: AIContext): vo
     if (!blocked(ctx.map, nx, e.y, e.z, near, e.radius)) e.x = nx;
     if (!blocked(ctx.map, e.x, ny, e.z, near, e.radius)) e.y = ny;
     const sec = locateSector(ctx.map, e.x, e.y);
-    if (sec >= 0) e.z = ctx.map.sectors[sec]!.floorHeight; // stick to the floor
+    if (sec >= 0) { e.z = ctx.map.sectors[sec]!.floorHeight; e.sector = sec; }
 
     // Ranged attack while chasing: throw a projectile when in sight + off cooldown.
     if (

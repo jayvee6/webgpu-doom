@@ -511,7 +511,9 @@ async function main() {
     // Rebuild billboards from live entities (the dynamic-sprite path).
     billboards.length = 0;
     for (const e of state.entities) {
-      if (e.active && e.lump) billboards.push({ lump: e.lump, x: e.x, y: e.y, floor: e.z, light: lights.sectorLight(e.sector) });
+      if (!e.active || !e.lump) continue;
+      const onFloor = e.ai?.state === "dead"; // corpses lie flat; everything else is a billboard
+      billboards.push({ lump: e.lump, x: e.x, y: e.y, floor: e.z, light: lights.sectorLight(e.sector), onFloor });
     }
     sprites.setBillboards(billboards);
 

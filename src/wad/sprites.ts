@@ -51,9 +51,12 @@ export class SpriteLib {
       if (this.hasFrameRot(sprite, f, "1") || this.hasFrameRot(sprite, f, "0")) walk.push(f);
     }
     const death: string[] = [];
-    for (let c = "E".charCodeAt(0); c <= "P".charCodeAt(0); c++) {
+    // Scan E–Z for all death/dying frames: include both rotation-0-only corpse frames
+    // AND directional frames (rotation-1 variants) that Freedoom uses for the falling
+    // sequence (e.g. TROO E–H, POSS E–G). resolveLump() will pick the front-facing view.
+    for (let c = "E".charCodeAt(0); c <= "Z".charCodeAt(0); c++) {
       const f = String.fromCharCode(c);
-      if (this.hasFrameRot(sprite, f, "0") && !this.hasFrameRot(sprite, f, "1")) death.push(f);
+      if (this.hasFrameRot(sprite, f, "0") || this.hasFrameRot(sprite, f, "1")) death.push(f);
     }
     if (walk.length === 0) walk.push("A");
     return { walk, death };
