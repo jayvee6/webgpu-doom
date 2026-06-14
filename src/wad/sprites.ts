@@ -62,6 +62,22 @@ export class SpriteLib {
     return { walk, death };
   }
 
+  /**
+   * Resolve sprite+frame to a lump for a specific Doom rotation (1=front, 5=back, etc.).
+   * Handles mirror-pair lumps like "TROOA2A8" (rot 2 and rot 8 share one lump).
+   * Falls back to resolveLump() if no rotation-specific lump is found.
+   */
+  resolveLumpForRot(sprite: string, frame: string, rot: number): string | null {
+    const rotStr = String(rot);
+    const direct = sprite + frame + rotStr;
+    if (this.names.has(direct)) return direct;
+    // Mirror pairs: 8-char names like "TROOA2A8" — rot at index 5 or 7
+    for (const n of this.names) {
+      if (n.length === 8 && n.startsWith(sprite + frame) && (n[5] === rotStr || n[7] === rotStr)) return n;
+    }
+    return this.resolveLump(sprite, frame);
+  }
+
   /** Resolve sprite+frame to a concrete lump name (front-facing), or null. */
   resolveLump(sprite: string, frame: string): string | null {
     const base = sprite + frame;

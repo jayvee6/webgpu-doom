@@ -261,6 +261,9 @@ export class SpriteRenderer {
     if (n > 0) this.device.queue.writeBuffer(this.instBuf, 0, s, 0, n * FLOATS_PER_INST);
   }
 
+  /** True if the given lump was registered in the sprite atlas at construction time. */
+  hasLump(lump: string): boolean { return this.rects.has(lump); }
+
   dispose(): void {
     this.instBuf.destroy();
     this.ubuf.destroy();
