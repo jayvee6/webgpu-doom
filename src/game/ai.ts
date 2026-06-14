@@ -39,6 +39,8 @@ export interface AIContext {
   projLumpFor?: Map<string, string>;
   /** Callback to push a new projectile entity this tick. */
   spawnProjectile?: (x: number, y: number, z: number, vx: number, vy: number, lump: string, damage: number) => void;
+  /** Broadphase spatial query (from EntityGrid) for monster-vs-monster separation. */
+  queryNear?: (x: number, y: number, radius: number) => import("./state").Entity[];
 }
 
 type SoundKind = "sight" | "pain" | "death" | "melee";
@@ -106,6 +108,21 @@ function updateMonster(e: Entity, ai: MonsterAI, dt: number, ctx: AIContext): vo
     if (!blocked(ctx.map, e.x, ny, e.z, near, e.radius)) e.y = ny;
     const sec = locateSector(ctx.map, e.x, e.y);
     if (sec >= 0) { e.z = ctx.map.sectors[sec]!.floorHeight; e.sector = sec; }
+
+    // Push-apart: separate from overlapping monsters so they don't stack.
+    if (ctx.queryNear) {
+      for (const other of ctx.queryNear(e.x, e.y, e.radius * 3)) {
+        if (other === e || !other.ai || !other.active) continue;
+        const odx = e.x - other.x, ody = e.y - other.y;
+        const dist = Math.hypot(odx, ody) || 1;
+        const minDist = e.radius + other.radius;
+        if (dist < minDist) {
+          const push = (minDist - dist) * 0.5;
+          e.x += (odx / dist) * push;
+          e.y += (ody / dist) * push;
+        }
+      }
+    }
 
     // Ranged attack while chasing: throw a projectile when in sight + off cooldown.
     if (

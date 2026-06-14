@@ -74,6 +74,14 @@
       #crosshair { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; pointer-events: none; }
       #crosshair[hidden] { display: none; }
 
+      /* Screen flash overlays (pain = red, pickup = yellow) */
+      #pain-flash, #pickup-flash {
+        position: fixed; inset: 0; z-index: 7; pointer-events: none;
+        opacity: 0; transition: opacity 0.05s linear;
+      }
+      #pain-flash   { background: rgba(180, 0, 0, 0.45); }
+      #pickup-flash { background: rgba(220, 200, 0, 0.35); }
+
       /* Debug HUD (kept; Phase 4 will demote it) */
       #hud {
         position: fixed; left: 10px; top: 10px; z-index: 6;
@@ -104,6 +112,9 @@
         </g>
       </svg>
     </div>
+
+    <div id="pain-flash"></div>
+    <div id="pickup-flash"></div>
 
     <div id="hud"></div>
 

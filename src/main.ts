@@ -38,6 +38,8 @@ const elLoading = $("loading"), elTitle = $("title"), elErr = $("err");
 const elLoadFill = $("load-fill"), elLoadLabel = $("load-label");
 const elErrMsg = $("err-msg"), elCta = $("cta"), elCrosshair = $("crosshair");
 const elInter = $("intermission"), elInterDone = $("inter-done"), elInterStats = $("inter-stats"), elInterCta = $("inter-cta");
+const elPainFlash = $("pain-flash"), elPickupFlash = $("pickup-flash");
+let painFlash = 0, pickupFlash = 0; // 0..1 opacity, decays each frame
 
 function showError(message: string): never {
   elLoading.hidden = true; elTitle.hidden = true;
@@ -381,16 +383,18 @@ async function main() {
     for (const e of entityGrid.query(px, py, 64)) {
       if (e.kind !== "item" || !e.active) continue;
       if (Math.hypot(e.x - px, e.y - py) < e.radius + 16) {
-        if (applyPickup(state.player, e.type)) { e.active = false; sound.play("DSITEMUP"); }
+        if (applyPickup(state.player, e.type)) { e.active = false; sound.play("DSITEMUP"); pickupFlash = 0.6; }
       }
     }
   }
   function damagePlayer(amount: number): void {
     if (state.player.dead) return;
     state.player.health -= amount;
+    painFlash = Math.min(1, painFlash + amount / 60); // scale with hit severity
     if (state.player.health <= 0) {
       state.player.health = 0;
       state.player.dead = true;
+      painFlash = 1;
       respawnTimer = 2.5;
       sound.play("DSPLDETH");
       showMessage("YOU DIED", "#ff5555");
@@ -455,6 +459,7 @@ async function main() {
       projLumpFor,
       spawnProjectile: (x, y, z, vx, vy, lump, damage) =>
         spawnProjectile(state.entities, x, y, z, vx, vy, lump, damage),
+      queryNear: (x, y, r) => entityGrid.query(x, y, r),
     });
     updateProjectiles(state.entities, dt, {
       map, blockmap, px: cam.pos[0], py: -cam.pos[2],
@@ -499,6 +504,10 @@ async function main() {
     if (lights.consumeDirty()) world.setSectorLights(lights.lights());
     const inGame = playing() && mode === "world";
     elCrosshair.hidden = !inGame;
+
+    // Decay screen flashes (pain = 3/s, pickup = 5/s) and write opacity.
+    if (painFlash > 0)   { painFlash   = Math.max(0, painFlash   - dt * 3); elPainFlash.style.opacity   = String(painFlash); }
+    if (pickupFlash > 0) { pickupFlash = Math.max(0, pickupFlash - dt * 5); elPickupFlash.style.opacity = String(pickupFlash); }
 
     // First-person weapon overlay (rendered with the world; bobs only when walking).
     const showWeapon = mode === "world" && !state.player.dead;
