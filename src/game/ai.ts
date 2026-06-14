@@ -25,6 +25,9 @@ const MELEE_DAMAGE = 9;
 const ATTACK_COOLDOWN = 1.1; // s
 const PAIN_TIME = 0.12;
 
+/** Monsters in this set throw projectiles; others are melee-only. */
+const RANGED_MONSTERS = new Set(["TROO"]);
+
 export interface AIContext {
   map: DoomMap;
   blockmap: Blockmap;
@@ -32,6 +35,10 @@ export interface AIContext {
   py: number; // player map y
   damagePlayer: (amount: number) => void;
   playSound: (name: string, x: number, y: number) => void;
+  /** Resolved sprite lump per ranged monster sprite4 (pre-built at level load). */
+  projLumpFor?: Map<string, string>;
+  /** Callback to push a new projectile entity this tick. */
+  spawnProjectile?: (x: number, y: number, z: number, vx: number, vy: number, lump: string, damage: number) => void;
 }
 
 type SoundKind = "sight" | "pain" | "death" | "melee";
@@ -99,6 +106,20 @@ function updateMonster(e: Entity, ai: MonsterAI, dt: number, ctx: AIContext): vo
     if (!blocked(ctx.map, e.x, ny, e.z, near, e.radius)) e.y = ny;
     const sec = locateSector(ctx.map, e.x, e.y);
     if (sec >= 0) e.z = ctx.map.sectors[sec]!.floorHeight; // stick to the floor
+
+    // Ranged attack while chasing: throw a projectile when in sight + off cooldown.
+    if (
+      ai.cooldown <= 0 &&
+      RANGED_MONSTERS.has(ai.sprite4) &&
+      ctx.spawnProjectile &&
+      ctx.projLumpFor?.has(ai.sprite4) &&
+      hasSight(ctx.map, ctx.blockmap, e.x, e.y, ctx.px, ctx.py)
+    ) {
+      const lump = ctx.projLumpFor.get(ai.sprite4)!;
+      const speed = 350; // PROJ_SPEED — can't import to avoid circular dep
+      ctx.spawnProjectile(e.x, e.y, e.z + 32, (dx / dist) * speed, (dy / dist) * speed, lump, 5 + Math.floor(Math.random() * 8));
+      ai.cooldown = ATTACK_COOLDOWN + 0.3;
+    }
   }
   advanceWalk(e, ai, dt);
 }

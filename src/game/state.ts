@@ -10,6 +10,7 @@ import type { DoomMap } from "../wad/maps";
 import { locateSector } from "../wad/bsp";
 import { thingSprite, thingCategory, type ThingCategory } from "../wad/thingtypes";
 import type { SpriteLib } from "../wad/sprites";
+import type { ProjectileState } from "./projectile";
 
 export type MonsterState = "idle" | "chase" | "attack" | "pain" | "dead";
 
@@ -31,10 +32,15 @@ export interface Entity {
   /**
    * Monster behavior + animation state. Present iff this entity is a monster —
    * `e.ai` IS the monster discriminant (cheaper and safer than re-checking kind).
-   * Items/decor carry none of these fields. Projectiles will get their own
-   * sub-object + system at the same seam.
+   * Items/decor carry none of these fields.
    */
   ai?: MonsterAI;
+  /**
+   * Projectile motion state. Present iff this entity is an in-flight projectile.
+   * Spawned dynamically into state.entities[] by monster ranged attacks; managed
+   * by updateProjectiles() in the fixed sim tick.
+   */
+  proj?: ProjectileState;
 }
 
 export interface MonsterAI {

@@ -10,6 +10,7 @@ import { GameState } from "./game/state";
 import { LightState } from "./game/lights";
 import { updateEntities, hasSight, monsterSound } from "./game/ai";
 import { fireHitscan } from "./game/combat";
+import { spawnProjectile, updateProjectiles, PROJ_SPRITES } from "./game/projectile";
 import { applyPickup } from "./game/items";
 import { SoundSystem } from "./audio/sound";
 import { loadPalettes, paletteRGBA, buildLitPalette } from "./wad/graphics";
@@ -122,6 +123,7 @@ async function main() {
   let state!: GameState;
   let blockmap!: Blockmap;
   let entityGrid!: EntityGrid;
+  let projLumpFor!: Map<string, string>;
   let sprites!: SpriteRenderer;
   let startPos: Vec3 = [0, EYE_HEIGHT, 0];
   let monsterTotal = 0;
@@ -178,7 +180,21 @@ async function main() {
     state.player.ammo = { ...carried.ammo };
     blockmap = new Blockmap(map);
     entityGrid = new EntityGrid(map);
-    sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, state.spriteLumps(), litPalette, Math.max(1, state.entities.length));
+
+    // Pre-resolve projectile lumps so the atlas covers dynamically-spawned entities.
+    // projLumpFor maps sprite4 → first/spawn frame; all frames go into projLumpSet
+    // for atlas registration (they differ, so we can't just take .values()).
+    projLumpFor = new Map();
+    const projLumpSet = new Set<string>();
+    for (const [sprite4, sprite, frame] of PROJ_SPRITES) {
+      const l = spriteLib.resolveLump(sprite, frame);
+      if (!l) continue;
+      projLumpSet.add(l);
+      if (!projLumpFor.has(sprite4)) projLumpFor.set(sprite4, l); // first = spawn lump
+    }
+    const projLumps = [...projLumpSet];
+    // +64 instance capacity for in-flight projectiles (fixed instBuf size).
+    sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, [...state.spriteLumps(), ...projLumps], litPalette, Math.max(1, state.entities.length + 64));
     monsterTotal = state.entities.filter((e) => e.ai).length;
     itemTotal = state.entities.filter((e) => e.kind === "item").length;
 
@@ -277,7 +293,7 @@ async function main() {
   // points at (or retains) a disposed level after buildLevel() swaps them out.
   Object.defineProperty(window, "__doom", {
     configurable: true,
-    get: () => ({ gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, entityGrid, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound, lights }),
+    get: () => ({ gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, entityGrid, projLumpFor, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound, lights, spawnProjectile, updateProjectiles }),
   });
 
   // "Use" (spacebar): trigger the nearest usable line ~52 units in front.
@@ -435,6 +451,15 @@ async function main() {
     else checkPickups();
     updateEntities(state.entities, dt, {
       map, blockmap, px: cam.pos[0], py: -cam.pos[2], damagePlayer,
+      playSound: (name, x, y) => sound.play(name, x, y),
+      projLumpFor,
+      spawnProjectile: (x, y, z, vx, vy, lump, damage) =>
+        spawnProjectile(state.entities, x, y, z, vx, vy, lump, damage),
+    });
+    updateProjectiles(state.entities, dt, {
+      map, blockmap, px: cam.pos[0], py: -cam.pos[2],
+      queryNear: (x, y, r) => entityGrid.query(x, y, r),
+      damagePlayer,
       playSound: (name, x, y) => sound.play(name, x, y),
     });
   }
