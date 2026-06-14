@@ -12,7 +12,7 @@
 
 import type { DoomMap, Linedef } from "../wad/maps";
 import type { Blockmap } from "./blockmap";
-import type { Entity } from "./state";
+import type { Entity, MonsterAI } from "./state";
 import { blocked } from "./collision";
 import { locateSector } from "../wad/bsp";
 
@@ -52,45 +52,46 @@ export function monsterSound(sprite: string, kind: SoundKind): string {
   return (SOUNDS[sprite] ?? FALLBACK)[kind];
 }
 
+/** Monster system: advance every entity that has an AI sub-object. */
 export function updateEntities(entities: Entity[], dt: number, ctx: AIContext): void {
   for (const e of entities) {
-    if (e.kind === "monster" && e.active) updateMonster(e, dt, ctx);
+    if (e.ai && e.active) updateMonster(e, e.ai, dt, ctx);
   }
 }
 
-function updateMonster(e: Entity, dt: number, ctx: AIContext): void {
-  e.cooldown -= dt;
+function updateMonster(e: Entity, ai: MonsterAI, dt: number, ctx: AIContext): void {
+  ai.cooldown -= dt;
 
-  if (e.mstate === "dead") { advanceDeath(e, dt); return; }
-  if (e.mstate === "pain") {
+  if (ai.state === "dead") { advanceDeath(e, ai, dt); return; }
+  if (ai.state === "pain") {
     // Brief stun: advance only the pain timer and bail, so we don't fall through
     // to movement + advanceWalk (which shares animT and would clobber this timer).
-    e.animT += dt;
-    if (e.animT > PAIN_TIME) { e.mstate = "chase"; e.animT = 0; }
+    ai.animT += dt;
+    if (ai.animT > PAIN_TIME) { ai.state = "chase"; ai.animT = 0; }
     return;
   }
 
   const dx = ctx.px - e.x, dy = ctx.py - e.y;
   const dist = Math.hypot(dx, dy) || 1;
 
-  if (e.mstate === "idle") {
+  if (ai.state === "idle") {
     if (dist < SIGHT_RANGE && hasSight(ctx.map, ctx.blockmap, e.x, e.y, ctx.px, ctx.py)) {
-      e.mstate = "chase";
-      ctx.playSound(monsterSound(e.sprite4, "sight"), e.x, e.y);
+      ai.state = "chase";
+      ctx.playSound(monsterSound(ai.sprite4, "sight"), e.x, e.y);
     } else return;
   }
 
   e.angle = (Math.atan2(dy, dx) * 180) / Math.PI;
 
   if (dist <= e.radius + ATTACK_RANGE) {
-    e.mstate = "attack";
-    if (e.cooldown <= 0) {
+    ai.state = "attack";
+    if (ai.cooldown <= 0) {
       ctx.damagePlayer(MELEE_DAMAGE);
-      ctx.playSound(monsterSound(e.sprite4, "melee"), e.x, e.y);
-      e.cooldown = ATTACK_COOLDOWN;
+      ctx.playSound(monsterSound(ai.sprite4, "melee"), e.x, e.y);
+      ai.cooldown = ATTACK_COOLDOWN;
     }
   } else {
-    e.mstate = "chase";
+    ai.state = "chase";
     const sp = MONSTER_SPEED * dt;
     const nx = e.x + (dx / dist) * sp, ny = e.y + (dy / dist) * sp;
     const near = ctx.blockmap.linesNear(e.x, e.y, e.radius + 48);
@@ -99,47 +100,48 @@ function updateMonster(e: Entity, dt: number, ctx: AIContext): void {
     const sec = locateSector(ctx.map, e.x, e.y);
     if (sec >= 0) e.z = ctx.map.sectors[sec]!.floorHeight; // stick to the floor
   }
-  advanceWalk(e, dt);
+  advanceWalk(e, ai, dt);
 }
 
-function advanceWalk(e: Entity, dt: number): void {
-  if (e.walkFrames.length <= 1) { setFrame(e, e.walkFrames[0]); return; }
-  e.animT += dt;
-  if (e.animT >= WALK_FRAME_TIME) {
-    e.animT = 0;
-    e.animI = (e.animI + 1) % e.walkFrames.length;
-    setFrame(e, e.walkFrames[e.animI]);
+function advanceWalk(e: Entity, ai: MonsterAI, dt: number): void {
+  if (ai.walkFrames.length <= 1) { setFrame(e, ai, ai.walkFrames[0]); return; }
+  ai.animT += dt;
+  if (ai.animT >= WALK_FRAME_TIME) {
+    ai.animT = 0;
+    ai.animI = (ai.animI + 1) % ai.walkFrames.length;
+    setFrame(e, ai, ai.walkFrames[ai.animI]);
   }
 }
 
-function advanceDeath(e: Entity, dt: number): void {
-  if (e.deathFrames.length === 0) return;
-  e.animT += dt;
-  if (e.animI < e.deathFrames.length - 1 && e.animT >= DEATH_FRAME_TIME) {
-    e.animT = 0;
-    e.animI++;
-    setFrame(e, e.deathFrames[e.animI]);
+function advanceDeath(e: Entity, ai: MonsterAI, dt: number): void {
+  if (ai.deathFrames.length === 0) return;
+  ai.animT += dt;
+  if (ai.animI < ai.deathFrames.length - 1 && ai.animT >= DEATH_FRAME_TIME) {
+    ai.animT = 0;
+    ai.animI++;
+    setFrame(e, ai, ai.deathFrames[ai.animI]);
   }
 }
 
-function setFrame(e: Entity, f: string | undefined): void {
+function setFrame(e: Entity, ai: MonsterAI, f: string | undefined): void {
   if (!f) return;
-  const l = e.frameLumps[f];
-  if (l) { e.frame = f; e.lump = l; }
+  const l = ai.frameLumps[f];
+  if (l) { ai.frame = f; e.lump = l; } // ai.frame tracks logic; e.lump is what the renderer draws
 }
 
 /** Apply damage to a monster; transition to pain or death. */
 export function hurtMonster(e: Entity, amount: number): void {
-  if (e.mstate === "dead") return;
-  e.health -= amount;
-  if (e.health <= 0) {
-    e.mstate = "dead";
-    e.animT = 0; e.animI = 0;
-    if (e.deathFrames.length > 0) setFrame(e, e.deathFrames[0]);
+  const ai = e.ai;
+  if (!ai || ai.state === "dead") return;
+  ai.health -= amount;
+  if (ai.health <= 0) {
+    ai.state = "dead";
+    ai.animT = 0; ai.animI = 0;
+    if (ai.deathFrames.length > 0) setFrame(e, ai, ai.deathFrames[0]);
     else e.active = false; // no death sprite → vanish
   } else {
-    e.mstate = "pain";
-    e.animT = 0;
+    ai.state = "pain";
+    ai.animT = 0;
   }
 }
 

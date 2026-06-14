@@ -24,14 +24,22 @@ export interface Entity {
   light: number; // 0..1 (spawn light; live light comes from LightState per frame)
   radius: number;
   height: number;
-  health: number;
-  /** Resolved sprite lump for the current frame, or "" if none. */
+  /** Resolved sprite lump for the current frame, or "" if none. Renderer reads this. */
   lump: string;
   /** false = removed from the world (picked up / dead / despawned). */
   active: boolean;
+  /**
+   * Monster behavior + animation state. Present iff this entity is a monster —
+   * `e.ai` IS the monster discriminant (cheaper and safer than re-checking kind).
+   * Items/decor carry none of these fields. Projectiles will get their own
+   * sub-object + system at the same seam.
+   */
+  ai?: MonsterAI;
+}
 
-  // Behavior (monsters)
-  mstate: MonsterState;
+export interface MonsterAI {
+  state: MonsterState;
+  health: number;
   sprite4: string; // 4-char sprite name
   frame: string; // current frame letter
   frameLumps: Record<string, string>; // letter → resolved lump
@@ -70,31 +78,32 @@ export class GameState {
       const light = sec >= 0 ? map.sectors[sec]!.light / 255 : 1;
       const kind = thingCategory(t.type);
 
-      // Resolve animation frames (monsters get walk + death; others just the spawn frame).
-      const frameLumps: Record<string, string> = {};
-      let walkFrames: string[] = [ts.frame];
-      let deathFrames: string[] = [];
+      const entity: Entity = {
+        kind, type: t.type, x: t.x, y: t.y, z, sector: sec, angle: t.angle, light,
+        radius: kind === "monster" ? 20 : 16, height: 56,
+        lump, active: true,
+      };
+
+      // Monsters get walk + death animation frames and a behavior sub-object.
+      // Items/decor are inert holders of their single spawn lump (e.lump).
       if (kind === "monster") {
         const af = lib.monsterFrames(ts.sprite);
-        walkFrames = af.walk;
-        deathFrames = af.death;
+        const frameLumps: Record<string, string> = {};
         for (const f of [...af.walk, ...af.death]) {
           const l = lib.resolveLump(ts.sprite, f);
           if (l) frameLumps[f] = l;
         }
+        frameLumps[ts.frame] = lump;
+        entity.ai = {
+          state: "idle", health: monsterHealth(t.type), sprite4: ts.sprite, frame: ts.frame,
+          frameLumps,
+          walkFrames: af.walk.filter((f) => frameLumps[f]),
+          deathFrames: af.death.filter((f) => frameLumps[f]),
+          animT: 0, animI: 0, cooldown: 0,
+        };
       }
-      frameLumps[ts.frame] = lump;
 
-      this.entities.push({
-        kind, type: t.type, x: t.x, y: t.y, z, sector: sec, angle: t.angle, light,
-        radius: kind === "monster" ? 20 : 16, height: 56,
-        health: kind === "monster" ? monsterHealth(t.type) : 0,
-        lump, active: true,
-        mstate: "idle", sprite4: ts.sprite, frame: ts.frame,
-        frameLumps, walkFrames: walkFrames.filter((f) => frameLumps[f]),
-        deathFrames: deathFrames.filter((f) => frameLumps[f]),
-        animT: 0, animI: 0, cooldown: 0,
-      });
+      this.entities.push(entity);
     }
   }
 
@@ -102,7 +111,8 @@ export class GameState {
   spriteLumps(): string[] {
     const set = new Set<string>();
     for (const e of this.entities) {
-      for (const l of Object.values(e.frameLumps)) if (l) set.add(l);
+      if (e.ai) { for (const l of Object.values(e.ai.frameLumps)) if (l) set.add(l); }
+      else if (e.lump) set.add(e.lump);
     }
     return [...set];
   }

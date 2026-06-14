@@ -19,7 +19,7 @@ export function fireHitscan(state: GameState, map: DoomMap, blockmap: Blockmap, 
   let best: Entity | null = null;
   let bestT = 4000;
   for (const e of state.entities) {
-    if (e.kind !== "monster" || !e.active || e.mstate === "dead") continue;
+    if (!e.ai || !e.active || e.ai.state === "dead") continue;
     const rx = e.x - ox, ry = e.y - oy;
     const t = rx * dx + ry * dy; // distance along the ray
     if (t <= 0 || t >= bestT) continue;

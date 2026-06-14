@@ -124,7 +124,7 @@ async function main() {
   let startPos: Vec3 = [0, EYE_HEIGHT, 0];
   let monsterTotal = 0;
   let itemTotal = 0;
-  const aliveMonsters = () => state.entities.reduce((n, e) => n + (e.kind === "monster" && e.mstate !== "dead" ? 1 : 0), 0);
+  const aliveMonsters = () => state.entities.reduce((n, e) => n + (e.ai && e.ai.state !== "dead" ? 1 : 0), 0);
   const itemsTaken = () => itemTotal - state.entities.reduce((n, e) => n + (e.kind === "item" && e.active ? 1 : 0), 0);
 
   function buildLevel(name: string): void {
@@ -176,7 +176,7 @@ async function main() {
     state.player.ammo = { ...carried.ammo };
     blockmap = new Blockmap(map);
     sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, state.spriteLumps(), litPalette, Math.max(1, state.entities.length));
-    monsterTotal = state.entities.filter((e) => e.kind === "monster").length;
+    monsterTotal = state.entities.filter((e) => e.ai).length;
     itemTotal = state.entities.filter((e) => e.kind === "item").length;
 
     // Camera at player-1 start, eye above the floor it stands on.
@@ -350,7 +350,7 @@ async function main() {
     weapon.onFire();
     sound.play("DSPISTOL");
     const hit = fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.yaw);
-    if (hit) sound.play(monsterSound(hit.sprite4, hit.mstate === "dead" ? "death" : "pain"), hit.x, hit.y);
+    if (hit?.ai) sound.play(monsterSound(hit.ai.sprite4, hit.ai.state === "dead" ? "death" : "pain"), hit.x, hit.y);
   }
 
   // Pick up items the player walks over (item disappears via active=false).
@@ -381,7 +381,7 @@ async function main() {
     state.player.dead = false;
     cam.pos[0] = startPos[0]; cam.pos[1] = startPos[1]; cam.pos[2] = startPos[2];
     cam.vz = 0;
-    for (const e of state.entities) if (e.kind === "monster") e.mstate = "idle";
+    for (const e of state.entities) if (e.ai) { e.ai.state = "idle"; e.ai.animT = 0; e.ai.animI = 0; }
     hideMessage();
   }
   addEventListener("mousedown", (e) => { if (playing() && e.button === 0) fireQueued = true; });
