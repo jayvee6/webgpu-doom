@@ -11,10 +11,24 @@ Full design doc lives in the joeOS vault: `Projects/webgpu-doom.md`.
 ```bash
 npm install
 npm run fetch-wad   # downloads freedoom1/2.wad into public/ (gitignored)
-npm run dev         # http://localhost:5173
+npm run dev         # http://localhost:5180
 ```
 
 WebGPU requires Chrome/Edge 113+, Safari 18+, or Firefox with WebGPU enabled.
+
+### Dedicated container server (optional)
+
+For a serve port that survives editor/session churn, serve the production build
+from an [Apple `container`](https://github.com/apple/container) (nginx in a Linux VM):
+
+```bash
+npm run serve:container   # build dist/, serve on http://localhost:5180
+```
+
+The container is decoupled from any dev session. WebGPU still renders in the host
+browser (Metal) — Linux VMs have no GPU — so this only stabilises the serve side.
+`dist/` is volume-mounted: after the first run, `npm run build` + reload picks up
+changes live. Stop with `container rm -f webgpu-doom-server`.
 
 ## Status
 

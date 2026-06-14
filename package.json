@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "serve:container": "bash scripts/serve-container.sh",
     "fetch-wad": "bash scripts/fetch-wad.sh",
     "typecheck": "tsc --noEmit"
   },
