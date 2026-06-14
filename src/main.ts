@@ -368,7 +368,7 @@ async function main() {
     state.player.ammo.bul--;
     weapon.onFire();
     sound.play("DSPISTOL");
-    const hit = fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.yaw);
+    const hit = fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.pos[1], cam.yaw, cam.pitch);
     if (hit?.ai) sound.play(monsterSound(hit.ai.sprite4, hit.ai.state === "dead" ? "death" : "pain"), hit.x, hit.y);
   }
 

@@ -55,11 +55,10 @@ export class FreeFlyCamera {
     return this.keys.has("ShiftRight") || this.keys.has("ShiftLeft");
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  onMouse(dx: number, _dy: number, sens = 0.0022): void {
+  onMouse(dx: number, dy: number, sens = 0.0022): void {
     this.yaw += dx * sens;
-    // Pitch fixed at 0: classic Doom has no vertical aim, and hitscan fires
-    // along yaw only — allowing pitch would misalign the crosshair from shots.
+    const HALF_PI = Math.PI / 2 - 0.01;
+    this.pitch = Math.max(-HALF_PI, Math.min(HALF_PI, this.pitch - dy * sens));
   }
 
   update(dt: number): void {

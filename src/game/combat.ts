@@ -13,19 +13,23 @@ import { hasSight, hurtMonster } from "./ai";
 const PISTOL_DAMAGE = 18;
 const AIM_TOLERANCE = 18; // extra radius around the ray
 
-/** Fire from (ox,oy) along map-space yaw; damages the first monster hit. Returns it. */
-export function fireHitscan(state: GameState, map: DoomMap, blockmap: Blockmap, ox: number, oy: number, yaw: number): Entity | null {
-  const dx = Math.sin(yaw), dy = Math.cos(yaw); // map-forward
+/** Fire from (ox,oy,oz) along map-space yaw+pitch; damages the first monster hit. Returns it. */
+export function fireHitscan(state: GameState, map: DoomMap, blockmap: Blockmap, ox: number, oy: number, oz: number, yaw: number, pitch: number): Entity | null {
+  const dx = Math.sin(yaw), dy = Math.cos(yaw); // horizontal map-forward unit vector
+  const tanP = Math.tan(pitch); // height gained per unit of horizontal travel
   let best: Entity | null = null;
   let bestT = 4000;
   for (const e of state.entities) {
     if (!e.ai || !e.active || e.ai.state === "dead") continue;
     const rx = e.x - ox, ry = e.y - oy;
-    const t = rx * dx + ry * dy; // distance along the ray
+    const t = rx * dx + ry * dy; // horizontal distance along ray
     if (t <= 0 || t >= bestT) continue;
-    const perp = Math.abs(rx * dy - ry * dx); // perpendicular offset from the ray
+    const perp = Math.abs(rx * dy - ry * dx); // perpendicular offset
     if (perp > e.radius + AIM_TOLERANCE) continue;
-    if (!hasSight(map, blockmap, ox, oy, e.x, e.y)) continue; // wall in the way
+    // Vertical check: ray height at this horizontal distance vs entity height column
+    const rayZ = oz + t * tanP;
+    if (rayZ < e.z || rayZ > e.z + e.height) continue;
+    if (!hasSight(map, blockmap, ox, oy, e.x, e.y)) continue;
     best = e;
     bestT = t;
   }
