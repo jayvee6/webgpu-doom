@@ -26,6 +26,9 @@ export class SoundSystem {
     this.wad = wad;
   }
 
+  /** Expose the AudioContext for music playback (null until first resume()). */
+  get context(): AudioContext | null { return this.ctx; }
+
   /** Create/resume the context — must run inside a user gesture. */
   resume(): void {
     if (!this.ctx) {
