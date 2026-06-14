@@ -9,7 +9,7 @@ import { EntityGrid } from "./game/entitygrid";
 import { GameState } from "./game/state";
 import { LightState } from "./game/lights";
 import { updateEntities, hasSight, monsterSound } from "./game/ai";
-import { fireHitscan } from "./game/combat";
+import { fireHitscan, fireShotgun } from "./game/combat";
 import { spawnProjectile, updateProjectiles, PROJ_SPRITES } from "./game/projectile";
 import { applyPickup } from "./game/items";
 import { SoundSystem } from "./audio/sound";
@@ -22,6 +22,8 @@ import { TextureAtlas } from "./render/atlas";
 import { Sky } from "./render/sky";
 import { SpriteRenderer, type SpriteRequest } from "./render/sprites";
 import { WeaponHUD } from "./render/weapon";
+import { StatusBar } from "./render/statusbar";
+import { MusicPlayer } from "./audio/music";
 import { buildWalls } from "./geometry/walls";
 import { buildFlats } from "./geometry/flats";
 import { FreeFlyCamera } from "./camera/freefly";
@@ -109,6 +111,9 @@ async function main() {
   const weaponCanvas = $("weapon") as HTMLCanvasElement;
   const weapon = new WeaponHUD(weaponCanvas, wad, basePalette);
   const sound = new SoundSystem(wad);
+  const music = new MusicPlayer(wad, sound.context);
+  const statusbarCanvas = $("statusbar") as HTMLCanvasElement;
+  const statusbar = new StatusBar(statusbarCanvas, wad, basePalette);
   const cam = new FreeFlyCamera([0, EYE_HEIGHT, 0], 0);
   // Player stats carried between levels (keys reset each level).
   const carried = { health: 100, armor: 0, ammo: { bul: 50, shl: 0, rck: 0, cel: 0 } };
@@ -195,8 +200,20 @@ async function main() {
       if (!projLumpFor.has(sprite4)) projLumpFor.set(sprite4, l); // first = spawn lump
     }
     const projLumps = [...projLumpSet];
+    const rotLumps: string[] = [];
+    for (const e of state.entities) {
+      if (!e.ai) continue;
+      for (const f of [...e.ai.walkFrames, ...e.ai.deathFrames]) {
+        for (let rot = 1; rot <= 8; rot++) {
+          const l = spriteLib.resolveLumpForRot(e.ai.sprite4, f, rot);
+          if (l) rotLumps.push(l);
+        }
+      }
+    }
     // +64 instance capacity for in-flight projectiles (fixed instBuf size).
-    sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, [...state.spriteLumps(), ...projLumps], litPalette, Math.max(1, state.entities.length + 64));
+    sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib,
+      [...state.spriteLumps(), ...rotLumps, ...projLumps],
+      litPalette, Math.max(1, state.entities.length + 64));
     monsterTotal = state.entities.filter((e) => e.ai).length;
     itemTotal = state.entities.filter((e) => e.kind === "item").length;
 
@@ -211,6 +228,7 @@ async function main() {
     cam.pitch = 0; cam.vz = 0; cam.onKeyClear();
 
     console.log(`${name}: ${state.entities.length} entities, ${monsterTotal} monsters, atlas 2048×${atlas.atlasHeight}`);
+    music.start("D_" + name);
   }
 
   buildLevel(FIRST_MAP);
@@ -225,6 +243,7 @@ async function main() {
 
   let levelDone = false;
   function onLevelExit(): void {
+    music.stop();
     if (levelDone) return;
     levelDone = true;
     carried.health = state.player.health;
@@ -284,6 +303,8 @@ async function main() {
     if (e.code === "KeyM") { mode = mode === "world" ? "automap" : "world"; return; }
     if (e.code === "KeyF") { moveMode = moveMode === "walk" ? "fly" : "walk"; cam.vz = 0; return; }
     if (e.code === "Space") { e.preventDefault(); useQueued = true; return; }
+    if (e.code === "Digit1") { currentWeapon = "pistol"; return; }
+    if (e.code === "Digit2") { currentWeapon = "shotgun"; return; }
     cam.onKey(e.code, true);
   });
   addEventListener("keyup", (e) => cam.onKey(e.code, false));
@@ -360,16 +381,25 @@ async function main() {
   // sim tick, so combat mutates state deterministically at tick boundaries and
   // reads tick-stable camera position — not mid-interpolation on the event thread.
   let fireCd = 0;
+  let mouseHeld = false;
+  let currentWeapon: "pistol" | "shotgun" = "pistol";
   let fireQueued = false;
   let useQueued = false;
   let respawnTimer = 0;
   function fire(): void {
     if (fireCd > 0 || state.player.dead || mode !== "world") return;
-    fireCd = 0.16;
     weapon.onFire();
-    sound.play("DSPISTOL");
-    const hit = fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.pos[1], cam.yaw, cam.pitch);
-    if (hit?.ai) sound.play(monsterSound(hit.ai.sprite4, hit.ai.state === "dead" ? "death" : "pain"), hit.x, hit.y);
+    if (currentWeapon === "shotgun") {
+      fireCd = 0.7;
+      sound.play("DSSHOTGN");
+      const hits = fireShotgun(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.pos[1], cam.yaw, cam.pitch);
+      for (const h of hits) if (h.ai) sound.play(monsterSound(h.ai.sprite4, h.ai.state === "dead" ? "death" : "pain"), h.x, h.y);
+    } else {
+      fireCd = 0.16;
+      sound.play("DSPISTOL");
+      const hit = fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.pos[1], cam.yaw, cam.pitch);
+      if (hit?.ai) sound.play(monsterSound(hit.ai.sprite4, hit.ai.state === "dead" ? "death" : "pain"), hit.x, hit.y);
+    }
   }
 
   // Pick up items the player walks over (item disappears via active=false).
@@ -408,7 +438,8 @@ async function main() {
     for (const e of state.entities) if (e.ai) { e.ai.state = "idle"; e.ai.animT = 0; e.ai.animI = 0; }
     hideMessage();
   }
-  addEventListener("mousedown", (e) => { if (playing() && e.button === 0) fireQueued = true; });
+  addEventListener("mousedown", (e) => { if (e.button === 0) mouseHeld = true; });
+  addEventListener("mouseup", (e) => { if (e.button === 0) mouseHeld = false; });
 
   let lastW = 0, lastH = 0;
   let heightsWereActive = false; // gates the per-frame heights storage re-upload
@@ -448,6 +479,7 @@ async function main() {
     fireCd -= dt;
     // Consume edge-latched player actions at the tick boundary (post-move).
     if (useQueued) { useQueued = false; doUse(); }
+    if (mouseHeld && playing()) fireQueued = true;
     if (fireQueued) { fireQueued = false; fire(); }
     if (state.player.dead) { respawnTimer -= dt; if (respawnTimer <= 0) respawn(); }
     else checkPickups();
@@ -512,15 +544,24 @@ async function main() {
     weaponCanvas.hidden = !showWeapon;
     if (showWeapon) {
       const pin = cam.planarInput();
-      weapon.draw(inGame && moveMode === "walk" && (pin[0] !== 0 || pin[1] !== 0), dt);
+      weapon.draw(inGame && moveMode === "walk" && (pin[0] !== 0 || pin[1] !== 0), dt, currentWeapon);
     }
+    if (mode === "world" && !state.player.dead) statusbar.draw(state.player.health, state.player.armor, state.player.ammo.bul);
 
     // Rebuild billboards from live entities (the dynamic-sprite path).
     billboards.length = 0;
     for (const e of state.entities) {
       if (!e.active || !e.lump) continue;
-      const onFloor = e.ai?.state === "dead"; // corpses lie flat; everything else is a billboard
-      billboards.push({ lump: e.lump, x: e.x, y: e.y, floor: e.z, light: lights.sectorLight(e.sector), onFloor });
+      let lump = e.lump;
+      if (e.ai && e.ai.state !== "dead") {
+        const toCamDeg = Math.atan2(-cam.pos[2] - e.y, cam.pos[0] - e.x) * 180 / Math.PI;
+        const delta = ((toCamDeg - e.angle) + 360) % 360;
+        const rot = Math.floor((delta + 22.5) / 45) % 8 + 1;
+        const rotLump = spriteLib.resolveLumpForRot(e.ai.sprite4, e.ai.frame, rot);
+        if (rotLump && sprites.hasLump(rotLump)) lump = rotLump;
+      }
+      const onFloor = e.ai?.state === "dead";
+      billboards.push({ lump, x: e.x, y: e.y, floor: e.z, light: lights.sectorLight(e.sector), onFloor });
     }
     sprites.setBillboards(billboards);
 
@@ -573,7 +614,7 @@ async function main() {
     frame++; fpsN++;
     if (now - fpsT >= 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
     hud.textContent =
-      `webgpu-doom — P4 MSAA   [${mode} · ${moveMode}]  (CLICK fire · Space use · M map · F fly · WASD)\n` +
+      `webgpu-doom — P4 MSAA   [${mode} · ${moveMode}]  (CLICK/HOLD fire · 1=pistol 2=shotgun · Space use · M map · F fly · WASD)\n` +
       `HEALTH ${state.player.health}  ARMOR ${state.player.armor}  AMMO ${state.player.ammo.bul}  ·  monsters ${aliveMonsters()}/${monsterTotal}  ·  ${fps} fps\n` +
       `${map.name}  pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);
