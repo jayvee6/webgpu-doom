@@ -38,6 +38,9 @@ export class WeaponHUD {
   private readonly ready: Spr | null;
   private readonly fire: Spr | null;
   private readonly flash: Spr | null;
+  private readonly sgunReady: Spr | null;
+  private readonly sgunFire: Spr | null;
+  private readonly sgunFlash: Spr | null;
   private flashTimer = 0;
   private bob = 0;
 
@@ -47,13 +50,16 @@ export class WeaponHUD {
     this.ready = decodeRGBA(wad, "PISGA0", palette);
     this.fire = decodeRGBA(wad, "PISGB0", palette) ?? this.ready;
     this.flash = decodeRGBA(wad, "PISFA0", palette) ?? decodeRGBA(wad, "PISFB0", palette);
+    this.sgunReady = decodeRGBA(wad, "SHTGA0", palette);
+    this.sgunFire  = decodeRGBA(wad, "SHTGB0", palette) ?? this.sgunReady;
+    this.sgunFlash = decodeRGBA(wad, "SGTFA0", palette) ?? decodeRGBA(wad, "SGTFB0", palette);
   }
 
   onFire(): void {
     this.flashTimer = 0.09;
   }
 
-  draw(moving: boolean, dt: number): void {
+  draw(moving: boolean, dt: number, weapon: "pistol" | "shotgun" = "pistol"): void {
     const W = window.innerWidth, H = window.innerHeight;
     if (this.canvas.width !== W || this.canvas.height !== H) { this.canvas.width = W; this.canvas.height = H; }
     const c = this.ctx;
@@ -67,7 +73,10 @@ export class WeaponHUD {
 
     this.flashTimer -= dt;
     const firing = this.flashTimer > 0;
-    const gun = (firing && this.fire) ? this.fire : this.ready;
+    const readySpr = weapon === "shotgun" && this.sgunReady ? this.sgunReady : this.ready;
+    const fireSpr  = weapon === "shotgun" && this.sgunFire  ? this.sgunFire  : (this.fire ?? this.ready);
+    const flashSpr = weapon === "shotgun" && this.sgunFlash ? this.sgunFlash : this.flash;
+    const gun = (firing && fireSpr) ? fireSpr : (readySpr ?? this.ready);
 
     // Position the sprite so its horizontal centre is at the screen centre.
     // Freedoom weapon sprites have non-standard leftOffset values; centering
@@ -77,11 +86,11 @@ export class WeaponHUD {
     const gunY = H - gun.h * scale + bobY;
     c.drawImage(gun.canvas, gunX, gunY, gun.w * scale, gun.h * scale);
 
-    if (firing && this.flash) {
+    if (firing && flashSpr) {
       // Flash placed relative to the gun by the offset difference → lands on the barrel.
-      const fx = gunX + (gun.lo - this.flash.lo) * scale;
-      const fy = gunY + (gun.to - this.flash.to) * scale;
-      c.drawImage(this.flash.canvas, fx, fy, this.flash.w * scale, this.flash.h * scale);
+      const fx = gunX + (gun.lo - flashSpr.lo) * scale;
+      const fy = gunY + (gun.to - flashSpr.to) * scale;
+      c.drawImage(flashSpr.canvas, fx, fy, flashSpr.w * scale, flashSpr.h * scale);
     }
   }
 }
