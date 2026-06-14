@@ -98,6 +98,7 @@ export class SpriteRenderer {
   /** lump → atlas placement + offsets, for per-frame instance building. */
   private readonly rects = new Map<string, { ox: number; oy: number; w: number; h: number; lo: number; to: number }>();
   private readonly scratch: Float32Array<ArrayBuffer>;
+  private readonly frameScratch = new Float32Array(24); // reused per-frame uniform staging
   instanceCount = 0;
   readonly atlasHeight: number;
   readonly missing: string[] = [];
@@ -211,7 +212,7 @@ export class SpriteRenderer {
   }
 
   setFrame(vp: Float32Array<ArrayBuffer>, camPos: readonly [number, number, number], camRight: readonly [number, number, number]): void {
-    const buf = new Float32Array(24);
+    const buf = this.frameScratch;
     buf.set(vp, 0);
     buf[16] = camPos[0]; buf[17] = camPos[1]; buf[18] = camPos[2];
     buf[20] = camRight[0]; buf[21] = camRight[1]; buf[22] = camRight[2];

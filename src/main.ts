@@ -387,6 +387,7 @@ async function main() {
   addEventListener("mousedown", (e) => { if (playing() && e.button === 0) fireQueued = true; });
 
   let lastW = 0, lastH = 0;
+  let heightsWereActive = false; // gates the per-frame heights storage re-upload
   let prev = performance.now();
   let frame = 0, fps = 0, fpsT = prev, fpsN = 0;
 
@@ -454,8 +455,13 @@ async function main() {
       simPrev[2] + (cam.pos[2] - simPrev[2]) * alpha,
     ];
 
-    world.setHeights(mapState.heights());
-    world.setSectorLights(lights.lights());
+    // Only re-upload the animated storage buffers when something actually moved
+    // this frame. Heights change only while a door/lift is active (plus the final
+    // frame it settles); lights only when a flicker/strobe value flipped.
+    const heightsActive = mapState.activeCount > 0;
+    if (heightsActive || heightsWereActive) world.setHeights(mapState.heights());
+    heightsWereActive = heightsActive;
+    if (lights.consumeDirty()) world.setSectorLights(lights.lights());
     const inGame = playing() && mode === "world";
     elCrosshair.hidden = !inGame;
 

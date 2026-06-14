@@ -62,6 +62,7 @@ export class Sky {
   private readonly ubuf: GPUBuffer;
   private readonly skyBG: GPUBindGroup;
   private readonly atlasBG: GPUBindGroup;
+  private readonly frameScratch = new Float32Array(20); // reused per-frame uniform staging
   readonly skyId: number;
 
   constructor(device: GPUDevice, format: GPUTextureFormat, atlas: TextureAtlas, skyId: number) {
@@ -93,7 +94,7 @@ export class Sky {
   }
 
   setFrame(invVP: Float32Array<ArrayBuffer>, camPos: readonly [number, number, number]): void {
-    const buf = new Float32Array(20);
+    const buf = this.frameScratch;
     buf.set(invVP, 0);
     buf[16] = camPos[0]; buf[17] = camPos[1]; buf[18] = camPos[2];
     buf[19] = this.skyId;

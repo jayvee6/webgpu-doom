@@ -90,6 +90,7 @@ export class World {
   private readonly vbuf: GPUBuffer;
   private readonly ibuf: GPUBuffer;
   private readonly indexCount: number;
+  private readonly frameScratch = new Float32Array(20); // reused per-frame uniform staging
   private depth: GPUTexture | null = null;
   private depthViewCached: GPUTextureView | null = null;
   private depthW = 0;
@@ -166,7 +167,7 @@ export class World {
   }
 
   setFrame(vp: Float32Array<ArrayBuffer>, camPos: readonly [number, number, number]): void {
-    const buf = new Float32Array(20);
+    const buf = this.frameScratch;
     buf.set(vp, 0);
     buf[16] = camPos[0]; buf[17] = camPos[1]; buf[18] = camPos[2];
     this.device.queue.writeBuffer(this.ubuf, 0, buf);

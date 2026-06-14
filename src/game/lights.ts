@@ -24,6 +24,7 @@ export class LightState {
   private readonly flickerTimer: Float32Array;
   private readonly flickerOn: Uint8Array;
   private strobePhase = 0;
+  private dirty = false; // a live light value changed since the last consumeDirty()
 
   constructor(map: DoomMap) {
     const n = map.sectors.length;
@@ -62,8 +63,9 @@ export class LightState {
     const strobeBright = this.strobePhase < STROBE_BRIGHT;
     for (let i = 0; i < this.live.length; i++) {
       const sp = this.special[i]!;
+      let nv = this.live[i]!;
       if (sp === 12) {
-        this.live[i] = strobeBright ? this.base[i]! : this.dark[i]!;
+        nv = strobeBright ? this.base[i]! : this.dark[i]!;
       } else if (sp === 1) {
         this.flickerTimer[i]! -= dt;
         if (this.flickerTimer[i]! <= 0) {
@@ -71,11 +73,21 @@ export class LightState {
           // mostly bright, brief dark flickers (Doom P_SpawnLightFlash feel)
           this.flickerTimer[i] = on ? 0.15 + Math.random() * 1.6 : 0.03 + Math.random() * 0.22;
         }
-        this.live[i] = this.flickerOn[i] ? this.base[i]! : this.dark[i]!;
+        nv = this.flickerOn[i] ? this.base[i]! : this.dark[i]!;
       } else {
-        this.live[i] = this.base[i]!;
+        nv = this.base[i]!;
       }
+      // Only flag a GPU re-upload when a value actually flips (strobe/flicker
+      // boundaries are rare — static-light sectors never dirty after construction).
+      if (nv !== this.live[i]) { this.live[i] = nv; this.dirty = true; }
     }
+  }
+
+  /** Did any live light value change since the last call? Clears the flag. */
+  consumeDirty(): boolean {
+    const d = this.dirty;
+    this.dirty = false;
+    return d;
   }
 
   /** Live per-sector light (0..1) for the GPU buffer. */

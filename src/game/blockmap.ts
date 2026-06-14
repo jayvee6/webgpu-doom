@@ -15,6 +15,11 @@ export class Blockmap {
   private readonly cols: number;
   private readonly rows: number;
   private readonly cells: number[][]; // cell index → linedef indices
+  // De-dup scratch for linesNear: a per-linedef "last query" stamp + reusable
+  // result array, so a hot per-entity/per-tick query allocates nothing.
+  private readonly stamp: Int32Array;
+  private queryGen = 0;
+  private readonly result: number[] = [];
 
   constructor(map: DoomMap) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -29,6 +34,7 @@ export class Blockmap {
     this.cols = Math.max(1, Math.ceil((maxX - minX) / CELL) + 1);
     this.rows = Math.max(1, Math.ceil((maxY - minY) / CELL) + 1);
     this.cells = Array.from({ length: this.cols * this.rows }, () => []);
+    this.stamp = new Int32Array(map.linedefs.length);
 
     // Add each linedef to every cell its bounding box overlaps (cheap + correct).
     for (let i = 0; i < map.linedefs.length; i++) {
@@ -50,16 +56,26 @@ export class Blockmap {
     return Math.max(0, Math.min(this.rows - 1, Math.floor((y - this.minY) / CELL)));
   }
 
-  /** Linedef indices in cells overlapping the circle (x,y,radius). De-duplicated. */
+  /**
+   * Linedef indices in cells overlapping the circle (x,y,radius). De-duplicated.
+   *
+   * Returns a SHARED reusable array — valid only until the next linesNear() call.
+   * Callers consume it immediately (iterate or pass to blocked()) and never hold it
+   * across another query; none of the call sites overlap, so no copy is needed.
+   */
   linesNear(x: number, y: number, radius: number): number[] {
     const c0 = this.col(x - radius), c1 = this.col(x + radius);
     const r0 = this.row(y - radius), r1 = this.row(y + radius);
-    const seen = new Set<number>();
+    const gen = ++this.queryGen;
+    const stamp = this.stamp, out = this.result;
+    out.length = 0;
     for (let r = r0; r <= r1; r++) {
       for (let c = c0; c <= c1; c++) {
-        for (const li of this.cells[r * this.cols + c]!) seen.add(li);
+        for (const li of this.cells[r * this.cols + c]!) {
+          if (stamp[li] !== gen) { stamp[li] = gen; out.push(li); }
+        }
       }
     }
-    return [...seen];
+    return out;
   }
 }
