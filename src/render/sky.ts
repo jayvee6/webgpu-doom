@@ -8,6 +8,7 @@
  */
 
 import type { TextureAtlas } from "./atlas";
+import { createCheckedModule } from "../gpu/shader";
 
 const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
 
@@ -77,7 +78,7 @@ export class Sky {
     });
     this.skyBG = device.createBindGroup({ label: "sky-bg", layout: skyBGL, entries: [{ binding: 0, resource: { buffer: this.ubuf } }] });
 
-    const module = device.createShaderModule({ label: "sky-wgsl", code: WGSL });
+    const module = createCheckedModule(device, "sky-wgsl", WGSL);
     this.pipeline = device.createRenderPipeline({
       label: "sky-pipeline",
       layout: device.createPipelineLayout({ bindGroupLayouts: [skyBGL, atlas.layout] }),

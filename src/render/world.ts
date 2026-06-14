@@ -13,6 +13,7 @@
  */
 
 import type { TextureAtlas } from "./atlas";
+import { createCheckedModule } from "../gpu/shader";
 
 const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
 export const SAMPLES = 4; // MSAA sample count (shared by all world-pass pipelines)
@@ -141,7 +142,7 @@ export class World {
       ],
     });
 
-    const module = device.createShaderModule({ label: "world-wgsl", code: WGSL });
+    const module = createCheckedModule(device, "world-wgsl", WGSL);
     this.pipeline = device.createRenderPipeline({
       label: "world-pipeline",
       layout: device.createPipelineLayout({ bindGroupLayouts: [frameBGL, atlas.layout] }),

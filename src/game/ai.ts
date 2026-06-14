@@ -63,8 +63,11 @@ function updateMonster(e: Entity, dt: number, ctx: AIContext): void {
 
   if (e.mstate === "dead") { advanceDeath(e, dt); return; }
   if (e.mstate === "pain") {
+    // Brief stun: advance only the pain timer and bail, so we don't fall through
+    // to movement + advanceWalk (which shares animT and would clobber this timer).
     e.animT += dt;
-    if (e.animT > PAIN_TIME) e.mstate = "chase";
+    if (e.animT > PAIN_TIME) { e.mstate = "chase"; e.animT = 0; }
+    return;
   }
 
   const dx = ctx.px - e.x, dy = ctx.py - e.y;

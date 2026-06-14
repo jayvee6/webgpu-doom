@@ -9,6 +9,7 @@
  */
 
 import type { DoomMap } from "../wad/maps";
+import { createCheckedModule } from "../gpu/shader";
 
 const WGSL = /* wgsl */ `
 struct Frame {
@@ -110,7 +111,7 @@ export class Wireframe {
       entries: [{ binding: 0, resource: { buffer: this.ubuf } }],
     });
 
-    const module = device.createShaderModule({ label: "wireframe-wgsl", code: WGSL });
+    const module = createCheckedModule(device, "wireframe-wgsl", WGSL);
     this.pipeline = device.createRenderPipeline({
       label: "wireframe-pipeline",
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout] }),

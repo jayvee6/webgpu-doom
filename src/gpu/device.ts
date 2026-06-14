@@ -23,6 +23,11 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<GpuContext> {
     // Surface device loss loudly; recovery is a later concern.
     console.error(`GPUDevice lost: ${info.reason} — ${info.message}`);
   });
+  // Validation/out-of-memory errors fire off-thread with no JS stack; surface them
+  // instead of letting a bad submit silently corrupt the frame.
+  device.addEventListener("uncapturederror", (e) => {
+    console.error("WebGPU uncaptured error:", (e as GPUUncapturedErrorEvent).error);
+  });
 
   const context = canvas.getContext("webgpu");
   if (!context) throw new Error("Failed to get a 'webgpu' canvas context.");

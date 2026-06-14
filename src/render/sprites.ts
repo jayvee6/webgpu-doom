@@ -8,6 +8,7 @@
  */
 
 import type { SpriteLib, SpriteImage } from "../wad/sprites";
+import { createCheckedModule } from "../gpu/shader";
 
 const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
 const ATLAS_W = 2048;
@@ -199,7 +200,7 @@ export class SpriteRenderer {
       ],
     });
 
-    const module = device.createShaderModule({ label: "sprite-wgsl", code: WGSL });
+    const module = createCheckedModule(device, "sprite-wgsl", WGSL);
     this.pipeline = device.createRenderPipeline({
       label: "sprite-pipeline",
       layout: device.createPipelineLayout({ bindGroupLayouts: [frameBGL, dataBGL] }),

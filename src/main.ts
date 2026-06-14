@@ -445,6 +445,9 @@ async function main() {
       acc += dt;
       let steps = 0;
       while (acc >= FIXED && steps < 5) { simulate(FIXED); acc -= FIXED; steps++; }
+      // Lag-spike guard: if we hit the step cap, drop the unsimulated backlog so
+      // alpha doesn't stay pinned at 1 (frozen interpolation) for several frames.
+      if (acc >= FIXED) acc %= FIXED;
     } else {
       acc = 0; simPrev = [cam.pos[0], cam.pos[1], cam.pos[2]];
     }
