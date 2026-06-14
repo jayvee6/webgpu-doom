@@ -5,6 +5,7 @@ import { locateSector } from "./wad/bsp";
 import { blocked, distSqPointSeg } from "./game/collision";
 import { MapState, USABLE, WALKOVER } from "./game/specials";
 import { Blockmap } from "./game/blockmap";
+import { EntityGrid } from "./game/entitygrid";
 import { GameState } from "./game/state";
 import { LightState } from "./game/lights";
 import { updateEntities, hasSight, monsterSound } from "./game/ai";
@@ -120,6 +121,7 @@ async function main() {
   let mapState!: MapState;
   let state!: GameState;
   let blockmap!: Blockmap;
+  let entityGrid!: EntityGrid;
   let sprites!: SpriteRenderer;
   let startPos: Vec3 = [0, EYE_HEIGHT, 0];
   let monsterTotal = 0;
@@ -175,6 +177,7 @@ async function main() {
     state.player.armor = carried.armor;
     state.player.ammo = { ...carried.ammo };
     blockmap = new Blockmap(map);
+    entityGrid = new EntityGrid(map);
     sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib, state.spriteLumps(), litPalette, Math.max(1, state.entities.length));
     monsterTotal = state.entities.filter((e) => e.ai).length;
     itemTotal = state.entities.filter((e) => e.kind === "item").length;
@@ -274,7 +277,7 @@ async function main() {
   // points at (or retains) a disposed level after buildLevel() swaps them out.
   Object.defineProperty(window, "__doom", {
     configurable: true,
-    get: () => ({ gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound, lights }),
+    get: () => ({ gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, entityGrid, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound, lights }),
   });
 
   // "Use" (spacebar): trigger the nearest usable line ~52 units in front.
@@ -354,9 +357,12 @@ async function main() {
   }
 
   // Pick up items the player walks over (item disappears via active=false).
+  // Broadphase via the entity grid: only items near the player are tested, not all
+  // ~123 every tick. Query radius covers the player's cell + neighbours (item
+  // radius 16 + player 16 = 32 max pickup distance).
   function checkPickups(): void {
     const px = cam.pos[0], py = -cam.pos[2];
-    for (const e of state.entities) {
+    for (const e of entityGrid.query(px, py, 64)) {
       if (e.kind !== "item" || !e.active) continue;
       if (Math.hypot(e.x - px, e.y - py) < e.radius + 16) {
         if (applyPickup(state.player, e.type)) { e.active = false; sound.play("DSITEMUP"); }
@@ -413,6 +419,7 @@ async function main() {
 
   function simulate(dt: number): void {
     simPrev = [cam.pos[0], cam.pos[1], cam.pos[2]];
+    entityGrid.rebuild(state.entities); // broadphase snapshot for this tick (pickups; future mob/projectile queries)
     if (moveMode === "fly") cam.update(dt);
     else walkStep(dt);
     mapState.update(dt);
