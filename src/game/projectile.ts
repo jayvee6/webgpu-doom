@@ -23,6 +23,10 @@ export const PROJ_SPEED = 350; // map units/sec (Doom: 10 units/tic × 35 tics/s
 export const PROJ_SPRITES: Array<[sprite4: string, sprite: string, frame: string]> = [
   ["TROO", "BAL1", "A"],
   ["TROO", "BAL1", "B"],
+  ["HEAD", "BAL2", "A"],
+  ["HEAD", "BAL2", "B"],
+  ["BOSS", "BAL7", "A"],
+  ["BOSS", "BAL7", "B"],
 ];
 
 export interface ProjectileState {

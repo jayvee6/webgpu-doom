@@ -26,7 +26,7 @@ const ATTACK_COOLDOWN = 1.1; // s
 const PAIN_TIME = 0.12;
 
 /** Monsters in this set throw projectiles; others are melee-only. */
-const RANGED_MONSTERS = new Set(["TROO"]);
+const RANGED_MONSTERS = new Set(["TROO", "HEAD", "BOSS"]);
 
 export interface AIContext {
   map: DoomMap;
