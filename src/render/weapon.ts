@@ -69,10 +69,11 @@ export class WeaponHUD {
     const firing = this.flashTimer > 0;
     const gun = (firing && this.fire) ? this.fire : this.ready;
 
-    // Doom positions weapons by their offsets so the aim point is screen-centre:
-    // sprite left edge = centre + (-160 - leftOffset)*scale. Vertical bottom-anchored.
+    // Position the sprite so its horizontal centre is at the screen centre.
+    // Freedoom weapon sprites have non-standard leftOffset values; centering
+    // the sprite image aligns the barrel with the crosshair.
     const scale = (H / 200) * 1.5;
-    const gunX = W / 2 + (-160 - gun.lo) * scale + bobX;
+    const gunX = W / 2 - (gun.w / 2) * scale + bobX;
     const gunY = H - gun.h * scale + bobY;
     c.drawImage(gun.canvas, gunX, gunY, gun.w * scale, gun.h * scale);
 
