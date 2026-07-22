@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  # Deterministic, GPU-free — this is the gate that should block merges.
+  build-and-unit:
+    name: Typecheck · Build · Unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  # End-to-end against a real (software) WebGPU Chromium. WebGPU on a GPU-less runner
+  # relies on SwiftShader (see playwright.config.ts flags) and is not guaranteed, so this
+  # job is best-effort until confirmed green on the runner. Drop continue-on-error to make
+  # it a required check once it reliably passes here.
+  e2e:
+    name: E2E (Playwright · software WebGPU)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Fetch Freedoom WAD (gitignored asset)
+        run: npm run fetch-wad
+      - name: Install Playwright Chromium + system deps
+        run: npx playwright install --with-deps chromium
+      - name: Run E2E
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

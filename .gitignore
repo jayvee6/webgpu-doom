@@ -2,6 +2,11 @@ node_modules/
 dist/
 *.log
 
+# Test artifacts
+test-results/
+playwright-report/
+.playwright/
+
 # WADs are fetched, never committed (keep repo asset-clean)
 public/*.wad
 *.wad

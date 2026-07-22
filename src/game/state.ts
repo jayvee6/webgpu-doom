@@ -11,6 +11,7 @@ import { locateSector } from "../wad/bsp";
 import { thingSprite, thingCategory, type ThingCategory } from "../wad/thingtypes";
 import type { SpriteLib } from "../wad/sprites";
 import type { ProjectileState } from "./projectile";
+import { PLAYER_RADIUS, PLAYER_HEIGHT } from "./collision";
 
 export type MonsterState = "idle" | "chase" | "attack" | "pain" | "dead";
 
@@ -22,6 +23,15 @@ export interface Entity {
   z: number; // feet (floor height)
   sector: number; // sector the thing stands in (-1 if none)
   angle: number; // degrees
+  /**
+   * Velocity. Unused by inert things; the movement model (Phase 1 of the
+   * player-entity refactor) writes these on the player map-object, and later on
+   * monsters. vx/vy = horizontal map-space; vz = vertical (eye/feet). Optional so
+   * items/decor carry nothing extra.
+   */
+  vx?: number;
+  vy?: number;
+  vz?: number;
   light: number; // 0..1 (spawn light; live light comes from LightState per frame)
   radius: number;
   height: number;
@@ -69,6 +79,13 @@ export class GameState {
   readonly map: DoomMap;
   readonly entities: Entity[] = [];
   readonly player: Player = { health: 100, armor: 0, dead: false, ammo: { bul: 50, shl: 0, rck: 0, cel: 0 }, keys: new Set() };
+  /**
+   * The player map-object — the player as a first-class Entity in the world (and in
+   * the EntityGrid broadphase). Phase 0: it exists and (from main.ts) tracks the
+   * still-authoritative camera; it is never rendered (lump "") and, having no `ai`,
+   * is invisible to combat/AI/pickup scans. Later phases make it own movement.
+   */
+  readonly pmo: Entity;
   unmappedTypes = 0;
 
   constructor(map: DoomMap, lib: SpriteLib) {
@@ -111,6 +128,21 @@ export class GameState {
 
       this.entities.push(entity);
     }
+
+    // Player map-object at the player-1 start (mirrors buildLevel's camera placement).
+    // Not spawned from the things loop above — player starts have no sprite, so they
+    // were skipped. z = feet (floor height); the camera sits EYE_HEIGHT above it.
+    const p1 = map.things.find((t) => t.type === 1);
+    const psx = p1 ? p1.x : 0, psy = p1 ? p1.y : 0;
+    const psec = locateSector(map, psx, psy);
+    const pz = psec >= 0 ? map.sectors[psec]!.floorHeight : 0;
+    this.pmo = {
+      kind: "player", type: 1, x: psx, y: psy, z: pz, sector: psec,
+      angle: p1 ? p1.angle : 0, light: 1,
+      radius: PLAYER_RADIUS, height: PLAYER_HEIGHT,
+      lump: "", active: true, vx: 0, vy: 0, vz: 0,
+    };
+    this.entities.push(this.pmo);
   }
 
   /** Every sprite lump any entity can show across its frames (for atlas building). */

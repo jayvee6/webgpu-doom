@@ -6,14 +6,14 @@
  * walk frames while moving, and play their death-frame run when killed. Runs in
  * the fixed timestep, so behavior is frame-rate-independent.
  *
- * NOTE: monsters don't yet block the player or each other (entity-vs-entity
- * collision isn't implemented) — they collide only with walls.
+ * Monsters block the player and each other via blockedByEntity() (EntityGrid
+ * broadphase), in addition to colliding with walls.
  */
 
 import type { DoomMap, Linedef } from "../wad/maps";
 import type { Blockmap } from "./blockmap";
 import type { Entity, MonsterAI } from "./state";
-import { blocked } from "./collision";
+import { blocked, blockedByEntity } from "./collision";
 import { locateSector } from "../wad/bsp";
 
 const SIGHT_RANGE = 1400;
@@ -28,6 +28,12 @@ const PAIN_TIME = 0.12;
 /** Monsters in this set throw projectiles; others are melee-only. */
 const RANGED_MONSTERS = new Set(["TROO", "HEAD", "BOSS"]);
 
+const PROJ_DAMAGE: Record<string, () => number> = {
+  TROO: () => 5 + (Math.random() * 7 | 0),
+  HEAD: () => 5 + (Math.random() * 7 | 0),
+  BOSS: () => 8 * (1 + (Math.random() * 7 | 0)),
+};
+
 export interface AIContext {
   map: DoomMap;
   blockmap: Blockmap;
@@ -39,7 +45,7 @@ export interface AIContext {
   projLumpFor?: Map<string, string>;
   /** Callback to push a new projectile entity this tick. */
   spawnProjectile?: (x: number, y: number, z: number, vx: number, vy: number, lump: string, damage: number) => void;
-  /** Broadphase spatial query (from EntityGrid) for monster-vs-monster separation. */
+  /** Broadphase spatial query (from EntityGrid) for entity-vs-entity blocking. */
   queryNear?: (x: number, y: number, radius: number) => import("./state").Entity[];
 }
 
@@ -104,25 +110,16 @@ function updateMonster(e: Entity, ai: MonsterAI, dt: number, ctx: AIContext): vo
     const sp = MONSTER_SPEED * dt;
     const nx = e.x + (dx / dist) * sp, ny = e.y + (dy / dist) * sp;
     const near = ctx.blockmap.linesNear(e.x, e.y, e.radius + 48);
-    if (!blocked(ctx.map, nx, e.y, e.z, near, e.radius)) e.x = nx;
-    if (!blocked(ctx.map, e.x, ny, e.z, near, e.radius)) e.y = ny;
+    const q = ctx.queryNear;
+    // Blocked by walls OR another solid entity (living monster / the player). This
+    // replaces the old positional push-apart: monsters now stop at each other and at
+    // the player instead of overlapping and being shoved apart (which could push them
+    // through walls). `near` (blockmap) and q (EntityGrid) are separate shared arrays,
+    // and each blockedByEntity call consumes its query immediately.
+    if (!blocked(ctx.map, nx, e.y, e.z, near, e.radius) && !(q && blockedByEntity(q, e, nx, e.y))) e.x = nx;
+    if (!blocked(ctx.map, e.x, ny, e.z, near, e.radius) && !(q && blockedByEntity(q, e, e.x, ny))) e.y = ny;
     const sec = locateSector(ctx.map, e.x, e.y);
     if (sec >= 0) { e.z = ctx.map.sectors[sec]!.floorHeight; e.sector = sec; }
-
-    // Push-apart: separate from overlapping monsters so they don't stack.
-    if (ctx.queryNear) {
-      for (const other of ctx.queryNear(e.x, e.y, e.radius * 3)) {
-        if (other === e || !other.ai || !other.active) continue;
-        const odx = e.x - other.x, ody = e.y - other.y;
-        const dist = Math.hypot(odx, ody) || 1;
-        const minDist = e.radius + other.radius;
-        if (dist < minDist) {
-          const push = (minDist - dist) * 0.5;
-          e.x += (odx / dist) * push;
-          e.y += (ody / dist) * push;
-        }
-      }
-    }
 
     // Ranged attack while chasing: throw a projectile when in sight + off cooldown.
     if (
@@ -134,7 +131,7 @@ function updateMonster(e: Entity, ai: MonsterAI, dt: number, ctx: AIContext): vo
     ) {
       const lump = ctx.projLumpFor.get(ai.sprite4)!;
       const speed = 350; // PROJ_SPEED — can't import to avoid circular dep
-      ctx.spawnProjectile(e.x, e.y, e.z + 32, (dx / dist) * speed, (dy / dist) * speed, lump, 5 + Math.floor(Math.random() * 8));
+      ctx.spawnProjectile(e.x, e.y, e.z + 32, (dx / dist) * speed, (dy / dist) * speed, lump, (PROJ_DAMAGE[ai.sprite4] ?? PROJ_DAMAGE["TROO"]!)());
       ai.cooldown = ATTACK_COOLDOWN + 0.3;
     }
   }
@@ -165,6 +162,17 @@ function setFrame(e: Entity, ai: MonsterAI, f: string | undefined): void {
   if (!f) return;
   const l = ai.frameLumps[f];
   if (l) { ai.frame = f; e.lump = l; } // ai.frame tracks logic; e.lump is what the renderer draws
+}
+
+/**
+ * Reset every LIVING monster to idle — used on player respawn so the level restarts
+ * fresh. Corpses (state "dead") are skipped: without that guard they stand back up
+ * with negative health, re-chase, and re-count as alive in the kill stats.
+ */
+export function resetMonstersToIdle(entities: Entity[]): void {
+  for (const e of entities) {
+    if (e.ai && e.ai.state !== "dead") { e.ai.state = "idle"; e.ai.animT = 0; e.ai.animI = 0; }
+  }
 }
 
 /** Apply damage to a monster; transition to pain or death. */

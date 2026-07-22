@@ -2,13 +2,13 @@ import { initGpu } from "./gpu/device";
 import { Wad } from "./wad/reader";
 import { loadMap, type DoomMap } from "./wad/maps";
 import { locateSector } from "./wad/bsp";
-import { blocked, distSqPointSeg } from "./game/collision";
+import { blocked, blockedByEntity, distSqPointSeg } from "./game/collision";
 import { MapState, USABLE, WALKOVER } from "./game/specials";
 import { Blockmap } from "./game/blockmap";
 import { EntityGrid } from "./game/entitygrid";
 import { GameState } from "./game/state";
 import { LightState } from "./game/lights";
-import { updateEntities, hasSight, monsterSound } from "./game/ai";
+import { updateEntities, hasSight, monsterSound, resetMonstersToIdle } from "./game/ai";
 import { fireHitscan, fireShotgun } from "./game/combat";
 import { spawnProjectile, updateProjectiles, PROJ_SPRITES } from "./game/projectile";
 import { applyPickup } from "./game/items";
@@ -27,6 +27,7 @@ import { MusicPlayer } from "./audio/music";
 import { buildWalls } from "./geometry/walls";
 import { buildFlats } from "./geometry/flats";
 import { FreeFlyCamera } from "./camera/freefly";
+import { stepVelocity, type MoveTune } from "./game/movement";
 import { invert, type Vec3 } from "./math/mat4";
 
 const WAD_URL = "/freedoom1.wad";
@@ -63,9 +64,12 @@ function segsCross(x1: number, y1: number, x2: number, y2: number, x3: number, y
   return t >= 0 && t <= 1 && u >= 0 && u <= 1;
 }
 
-const WALK_SPEED = 300;
-const RUN_SPEED = 500;
 const GRAVITY = 1800;
+// Player horizontal movement — Doom's P_Thrust model (see game/movement.ts). Friction
+// is applied once per 35 Hz sim tic; the equilibrium speed accel/(1−FRICTION) equals
+// the target. 583 / 291 u/s ≈ Doom's run / walk. Live-tunable via window.__doom.move
+// (see the debug getter); bake the values once they feel right.
+const move: MoveTune = { MAX_WALK: 291, MAX_RUN: 583, FRICTION: 0.90625 };
 
 // Transient centered gameplay message (YOU DIED / LEVEL COMPLETE).
 let msgEl: HTMLDivElement | null = null;
@@ -111,12 +115,10 @@ async function main() {
   const weaponCanvas = $("weapon") as HTMLCanvasElement;
   const weapon = new WeaponHUD(weaponCanvas, wad, basePalette);
   const sound = new SoundSystem(wad);
-  const music = new MusicPlayer(wad, sound.context);
+  const music = new MusicPlayer(wad, () => sound.context);
   const statusbarCanvas = $("statusbar") as HTMLCanvasElement;
   const statusbar = new StatusBar(statusbarCanvas, wad, basePalette);
   const cam = new FreeFlyCamera([0, EYE_HEIGHT, 0], 0);
-  // Player stats carried between levels (keys reset each level).
-  const carried = { health: 100, armor: 0, ammo: { bul: 50, shl: 0, rck: 0, cel: 0 } };
 
   // Per-level objects (rebuilt by buildLevel).
   let currentMap = FIRST_MAP;
@@ -172,6 +174,10 @@ async function main() {
     for (let i = 0; i < flats.indices.length; i++) indices[walls.indices.length + i] = flats.indices[i]! + wallVertCount;
     world = new World(gpu.device, gpu.format, mesh, indices, atlas, map.sectors.length * 2);
     wireframe = new Wireframe(gpu.device, gpu.format, map);
+    // Seed the automap view now. setView is otherwise only called on canvas-resize
+    // (see render loop), so a level built at a stable size would leave this fresh
+    // wireframe's frame uniform zeroed → divide-by-zero → blank automap until resize.
+    if (canvas.width && canvas.height) wireframe.setView(canvas.width, canvas.height);
 
     lights = new LightState(map);
     mapState = new MapState(map);
@@ -180,11 +186,18 @@ async function main() {
     world.setHeights(mapState.heights());
     world.setSectorLights(lights.lights());
 
-    // Entities, collision, sprites; carry the player's stats forward.
+    // Entities, collision, sprites. Carry the outgoing level's player stats forward
+    // (keys reset per level — the fresh GameState starts with an empty key set). No
+    // separate "carried" struct: the previous level's live player IS the source.
+    const carryStats = state
+      ? { health: state.player.health, armor: state.player.armor, ammo: { ...state.player.ammo } }
+      : null;
     state = new GameState(map, spriteLib);
-    state.player.health = carried.health;
-    state.player.armor = carried.armor;
-    state.player.ammo = { ...carried.ammo };
+    if (carryStats) {
+      state.player.health = carryStats.health;
+      state.player.armor = carryStats.armor;
+      state.player.ammo = carryStats.ammo;
+    }
     blockmap = new Blockmap(map);
     entityGrid = new EntityGrid(map);
 
@@ -200,16 +213,17 @@ async function main() {
       if (!projLumpFor.has(sprite4)) projLumpFor.set(sprite4, l); // first = spawn lump
     }
     const projLumps = [...projLumpSet];
-    const rotLumps: string[] = [];
+    const rotLumpSet = new Set<string>();
     for (const e of state.entities) {
       if (!e.ai) continue;
       for (const f of [...e.ai.walkFrames, ...e.ai.deathFrames]) {
         for (let rot = 1; rot <= 8; rot++) {
           const l = spriteLib.resolveLumpForRot(e.ai.sprite4, f, rot);
-          if (l) rotLumps.push(l);
+          if (l) rotLumpSet.add(l);
         }
       }
     }
+    const rotLumps = [...rotLumpSet];
     // +64 instance capacity for in-flight projectiles (fixed instBuf size).
     sprites = new SpriteRenderer(gpu.device, gpu.format, spriteLib,
       [...state.spriteLumps(), ...rotLumps, ...projLumps],
@@ -246,9 +260,6 @@ async function main() {
     music.stop();
     if (levelDone) return;
     levelDone = true;
-    carried.health = state.player.health;
-    carried.armor = state.player.armor;
-    carried.ammo = { ...state.player.ammo };
     // Intermission screen with the level's stats.
     elInterDone.textContent = `${currentMap} COMPLETE`;
     const row = (label: string, val: string) => `<tr><td style="text-align:right;color:var(--fg-dim)">${label}</td><td style="text-align:left;font-weight:700">${val}</td></tr>`;
@@ -272,13 +283,19 @@ async function main() {
   let mode: "world" | "automap" = "world";
   let moveMode: "walk" | "fly" = "walk";
   let started = false;
-  const playing = () => document.pointerLockElement === canvas;
+  // E2E hook: headless browsers can't reliably grant pointer lock, and the sim only
+  // runs while "playing". With ?e2e in the URL, treat the game as always playing so
+  // Playwright can drive input and read state. No effect on a normal (?e2e-less) load.
+  const E2E = new URLSearchParams(location.search).has("e2e");
+  const playing = () => document.pointerLockElement === canvas || E2E;
 
   // Title / pause gate: pointer lock is the play state; releasing it (Esc) pauses.
   // Hide the title only once lock is actually granted (pointerlockchange), so a
   // denied lock leaves the title up to retry rather than stranding the player.
   function enter(): void {
-    sound.resume(); // user gesture — unlock the AudioContext
+    // user gesture — unlock the AudioContext, then (re)start any music that was
+    // requested before audio was available (notably the first level's track).
+    void sound.resume().then(() => music.resume());
     Promise.resolve(canvas.requestPointerLock()).catch(() => { /* lock denied — title stays up */ });
   }
   elCta.addEventListener("click", enter);
@@ -301,7 +318,7 @@ async function main() {
   addEventListener("keydown", (e) => {
     if (!playing()) return;
     if (e.code === "KeyM") { mode = mode === "world" ? "automap" : "world"; return; }
-    if (e.code === "KeyF") { moveMode = moveMode === "walk" ? "fly" : "walk"; cam.vz = 0; return; }
+    if (e.code === "KeyF") { moveMode = moveMode === "walk" ? "fly" : "walk"; cam.vz = 0; state.pmo.vx = 0; state.pmo.vy = 0; state.pmo.vz = 0; return; }
     if (e.code === "Space") { e.preventDefault(); useQueued = true; return; }
     if (e.code === "Digit1") { currentWeapon = "pistol"; return; }
     if (e.code === "Digit2") { currentWeapon = "shotgun"; return; }
@@ -316,12 +333,12 @@ async function main() {
   // points at (or retains) a disposed level after buildLevel() swaps them out.
   Object.defineProperty(window, "__doom", {
     configurable: true,
-    get: () => ({ gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, entityGrid, projLumpFor, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound, lights, spawnProjectile, updateProjectiles }),
+    get: () => ({ gpu, wad, palettes, basePalette, map, world, wireframe, cam, sky, texLib, sprites, mapState, state, blockmap, entityGrid, projLumpFor, updateEntities, fireHitscan, hasSight, applyPickup, weapon, sound, lights, spawnProjectile, updateProjectiles, move, buildLevel }),
   });
 
   // "Use" (spacebar): trigger the nearest usable line ~52 units in front.
   function doUse(): void {
-    const px = cam.pos[0], py = -cam.pos[2];
+    const px = state.pmo.x, py = state.pmo.y;
     const ux = px + Math.sin(cam.yaw) * 52, uy = py + Math.cos(cam.yaw) * 52;
     let best = -1, bestD = 50 * 50;
     for (const i of blockmap.linesNear(ux, uy, 64)) {
@@ -346,34 +363,55 @@ async function main() {
     }
   }
 
-  // Walk physics: collide + slide against walls, follow floor, fall with gravity.
+  // Walk physics on the (authoritative) player map-object: momentum from thrust +
+  // friction, collide + slide against walls, follow floor, fall with gravity. The
+  // camera eye is derived from pmo at the end — pmo owns position now, not the camera.
   function walkStep(dt: number): void {
+    const pmo = state.pmo;
     const [idx, idy] = cam.planarInput();
-    let mx = cam.pos[0], my = -cam.pos[2];
-    const curSec = locateSector(map, mx, my);
+    let vx = pmo.vx ?? 0, vy = pmo.vy ?? 0, vz = pmo.vz ?? 0;
+
+    const curSec = locateSector(map, pmo.x, pmo.y);
     const pf = curSec >= 0 ? map.sectors[curSec]!.floorHeight : 0;
-    const dd = (cam.running() ? RUN_SPEED : WALK_SPEED) * dt;
-    const ddx = idx * dd, ddy = idy * dd;
-    const px0 = cam.pos[0], py0 = -cam.pos[2];
+
+    // P_Thrust momentum (friction each tic, then thrust toward input) — extracted to
+    // a pure, unit-tested function. One call == one 35 Hz tic.
+    ({ vx, vy } = stepVelocity({ vx, vy }, idx, idy, cam.running(), move));
+
+    // Move by velocity, axis-separated so we slide along walls. A blocked axis kills
+    // that velocity component so momentum can't pile up against a wall.
+    let mx = pmo.x, my = pmo.y;
+    const ddx = vx * dt, ddy = vy * dt;
     const near = blockmap.linesNear(mx, my, 96);
-    if (ddx !== 0 && !blocked(map, mx + ddx, my, pf, near)) mx += ddx;
-    if (ddy !== 0 && !blocked(map, mx, my + ddy, pf, near)) my += ddy;
-    cam.pos[0] = mx; cam.pos[2] = -my;
+    const qn = (x: number, y: number, r: number) => entityGrid.query(x, y, r);
+    const px0 = mx, py0 = my;
+    // Blocked by a wall OR a solid entity (a living monster) stops that axis — you
+    // can't walk through a Baron now. (qn = EntityGrid broadphase; near = blockmap,
+    // a separate shared array, so the two interleave safely.)
+    if (ddx !== 0) { if (!blocked(map, mx + ddx, my, pf, near) && !blockedByEntity(qn, pmo, mx + ddx, my)) mx += ddx; else vx = 0; }
+    if (ddy !== 0) { if (!blocked(map, mx, my + ddy, pf, near) && !blockedByEntity(qn, pmo, mx, my + ddy)) my += ddy; else vy = 0; }
     if (mx !== px0 || my !== py0) checkWalkover(px0, py0, mx, my);
 
+    // Vertical: gravity + floor-follow + head clamp, computed in eye-space exactly as
+    // before, then stored back as feet on the entity.
     const sec = locateSector(map, mx, my);
     const floorZ = sec >= 0 ? map.sectors[sec]!.floorHeight : pf;
     const ceilZ = sec >= 0 ? map.sectors[sec]!.ceilHeight : 1e9;
+    let eyeY = pmo.z + EYE_HEIGHT;
     const eyeTarget = floorZ + EYE_HEIGHT;
-    if (cam.pos[1] <= eyeTarget) {
-      cam.pos[1] = eyeTarget; cam.vz = 0; // grounded / stepped up
+    if (eyeY <= eyeTarget) {
+      eyeY = eyeTarget; vz = 0; // grounded / stepped up
     } else {
-      cam.vz -= GRAVITY * dt;
-      cam.pos[1] += cam.vz * dt;
-      if (cam.pos[1] < eyeTarget) { cam.pos[1] = eyeTarget; cam.vz = 0; }
+      vz -= GRAVITY * dt;
+      eyeY += vz * dt;
+      if (eyeY < eyeTarget) { eyeY = eyeTarget; vz = 0; }
     }
     const headMax = ceilZ - 8;
-    if (cam.pos[1] > headMax) { cam.pos[1] = headMax; if (cam.vz > 0) cam.vz = 0; }
+    if (eyeY > headMax) { eyeY = headMax; if (vz > 0) vz = 0; }
+
+    pmo.x = mx; pmo.y = my; pmo.z = eyeY - EYE_HEIGHT; pmo.sector = sec;
+    pmo.vx = vx; pmo.vy = vy; pmo.vz = vz;
+    cam.pos[0] = mx; cam.pos[1] = eyeY; cam.pos[2] = -my; // eye follows the player mobj
   }
 
   // Combat + player health/death/respawn.
@@ -392,12 +430,12 @@ async function main() {
     if (currentWeapon === "shotgun") {
       fireCd = 0.7;
       sound.play("DSSHOTGN");
-      const hits = fireShotgun(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.pos[1], cam.yaw, cam.pitch);
+      const hits = fireShotgun(state, map, blockmap, state.pmo.x, state.pmo.y, state.pmo.z + EYE_HEIGHT, cam.yaw, cam.pitch);
       for (const h of hits) if (h.ai) sound.play(monsterSound(h.ai.sprite4, h.ai.state === "dead" ? "death" : "pain"), h.x, h.y);
     } else {
       fireCd = 0.16;
       sound.play("DSPISTOL");
-      const hit = fireHitscan(state, map, blockmap, cam.pos[0], -cam.pos[2], cam.pos[1], cam.yaw, cam.pitch);
+      const hit = fireHitscan(state, map, blockmap, state.pmo.x, state.pmo.y, state.pmo.z + EYE_HEIGHT, cam.yaw, cam.pitch);
       if (hit?.ai) sound.play(monsterSound(hit.ai.sprite4, hit.ai.state === "dead" ? "death" : "pain"), hit.x, hit.y);
     }
   }
@@ -407,7 +445,7 @@ async function main() {
   // ~123 every tick. Query radius covers the player's cell + neighbours (item
   // radius 16 + player 16 = 32 max pickup distance).
   function checkPickups(): void {
-    const px = cam.pos[0], py = -cam.pos[2];
+    const px = state.pmo.x, py = state.pmo.y;
     for (const e of entityGrid.query(px, py, 64)) {
       if (e.kind !== "item" || !e.active) continue;
       if (Math.hypot(e.x - px, e.y - py) < e.radius + 16) {
@@ -435,10 +473,16 @@ async function main() {
     state.player.dead = false;
     cam.pos[0] = startPos[0]; cam.pos[1] = startPos[1]; cam.pos[2] = startPos[2];
     cam.vz = 0;
-    for (const e of state.entities) if (e.ai) { e.ai.state = "idle"; e.ai.animT = 0; e.ai.animI = 0; }
+    // pmo is authoritative for movement — reset it too, or walkStep would snap the
+    // camera straight back to the death spot on the next tick.
+    const pmo = state.pmo;
+    pmo.x = startPos[0]; pmo.y = -startPos[2]; pmo.z = startPos[1] - EYE_HEIGHT;
+    pmo.vx = 0; pmo.vy = 0; pmo.vz = 0;
+    pmo.sector = locateSector(map, pmo.x, pmo.y);
+    resetMonstersToIdle(state.entities); // living monsters back to idle; corpses stay dead
     hideMessage();
   }
-  addEventListener("mousedown", (e) => { if (e.button === 0) mouseHeld = true; });
+  addEventListener("mousedown", (e) => { if (e.button === 0) { mouseHeld = true; fireQueued = true; } });
   addEventListener("mouseup", (e) => { if (e.button === 0) mouseHeld = false; });
 
   let lastW = 0, lastH = 0;
@@ -469,13 +513,20 @@ async function main() {
   function simulate(dt: number): void {
     simPrev = [cam.pos[0], cam.pos[1], cam.pos[2]];
     entityGrid.rebuild(state.entities); // broadphase snapshot for this tick (pickups; future mob/projectile queries)
-    if (moveMode === "fly") cam.update(dt);
-    else walkStep(dt);
+    const pmo = state.pmo;
+    if (moveMode === "fly") {
+      cam.update(dt); // fly: camera authoritative; keep the player mobj shadowing it
+      pmo.x = cam.pos[0]; pmo.y = -cam.pos[2]; pmo.z = cam.pos[1] - EYE_HEIGHT;
+      pmo.sector = locateSector(map, pmo.x, pmo.y);
+    } else {
+      walkStep(dt); // walk: pmo authoritative, camera eye derived from it
+    }
+    pmo.angle = (Math.PI / 2 - cam.yaw) * 180 / Math.PI; // facing follows aim (for AI/rotations)
     mapState.update(dt);
     lights.update(dt);
 
     // Combat timers, monster AI, pickups, respawn.
-    sound.setListener(cam.pos[0], -cam.pos[2], cam.yaw);
+    sound.setListener(pmo.x, pmo.y, cam.yaw);
     fireCd -= dt;
     // Consume edge-latched player actions at the tick boundary (post-move).
     if (useQueued) { useQueued = false; doUse(); }
@@ -484,7 +535,7 @@ async function main() {
     if (state.player.dead) { respawnTimer -= dt; if (respawnTimer <= 0) respawn(); }
     else checkPickups();
     updateEntities(state.entities, dt, {
-      map, blockmap, px: cam.pos[0], py: -cam.pos[2], damagePlayer,
+      map, blockmap, px: pmo.x, py: pmo.y, damagePlayer,
       playSound: (name, x, y) => sound.play(name, x, y),
       projLumpFor,
       spawnProjectile: (x, y, z, vx, vy, lump, damage) =>
@@ -492,7 +543,7 @@ async function main() {
       queryNear: (x, y, r) => entityGrid.query(x, y, r),
     });
     updateProjectiles(state.entities, dt, {
-      map, blockmap, px: cam.pos[0], py: -cam.pos[2],
+      map, blockmap, px: pmo.x, py: pmo.y,
       queryNear: (x, y, r) => entityGrid.query(x, y, r),
       damagePlayer,
       playSound: (name, x, y) => sound.play(name, x, y),
@@ -546,7 +597,9 @@ async function main() {
       const pin = cam.planarInput();
       weapon.draw(inGame && moveMode === "walk" && (pin[0] !== 0 || pin[1] !== 0), dt, currentWeapon);
     }
-    if (mode === "world" && !state.player.dead) statusbar.draw(state.player.health, state.player.armor, state.player.ammo.bul);
+    const showStatusBar = mode === "world" && !state.player.dead;
+    statusbarCanvas.hidden = !showStatusBar;
+    if (showStatusBar) statusbar.draw(state.player.health, state.player.armor, state.player.ammo.bul);
 
     // Rebuild billboards from live entities (the dynamic-sprite path).
     billboards.length = 0;
@@ -614,8 +667,8 @@ async function main() {
     frame++; fpsN++;
     if (now - fpsT >= 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
     hud.textContent =
-      `webgpu-doom — P4 MSAA   [${mode} · ${moveMode}]  (CLICK/HOLD fire · 1=pistol 2=shotgun · Space use · M map · F fly · WASD)\n` +
-      `HEALTH ${state.player.health}  ARMOR ${state.player.armor}  AMMO ${state.player.ammo.bul}  ·  monsters ${aliveMonsters()}/${monsterTotal}  ·  ${fps} fps\n` +
+      `webgpu-doom — P4 MSAA   [${mode} · ${moveMode}]\n` +
+      `monsters ${aliveMonsters()}/${monsterTotal}  ·  ${fps} fps\n` +
       `${map.name}  pos ${cam.pos[0].toFixed(0)}, ${cam.pos[1].toFixed(0)}, ${cam.pos[2].toFixed(0)}   yaw ${((cam.yaw * 180) / Math.PI).toFixed(0)}°`;
     requestAnimationFrame(render);
   }
