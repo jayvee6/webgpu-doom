@@ -29,15 +29,20 @@ export class SoundSystem {
   /** Expose the AudioContext for music playback (null until first resume()). */
   get context(): AudioContext | null { return this.ctx; }
 
-  /** Create/resume the context — must run inside a user gesture. */
-  resume(): void {
+  /**
+   * Create/resume the context — must run inside a user gesture. Resolves once the
+   * context is actually running, so callers (e.g. music) can safely (re)schedule
+   * playback that would no-op against a still-suspended context.
+   */
+  resume(): Promise<void> {
     if (!this.ctx) {
       this.ctx = new AudioContext();
       this.master = this.ctx.createGain();
       this.master.gain.value = MASTER;
       this.master.connect(this.ctx.destination);
     }
-    if (this.ctx.state === "suspended") void this.ctx.resume();
+    if (this.ctx.state === "suspended") return this.ctx.resume();
+    return Promise.resolve();
   }
 
   setListener(x: number, y: number, yaw: number): void {

@@ -16,6 +16,18 @@ npm run dev         # http://localhost:5180
 
 WebGPU requires Chrome/Edge 113+, Safari 18+, or Firefox with WebGPU enabled.
 
+## Tests
+
+```bash
+npm test          # unit — Vitest, GPU-free gameplay logic (game/, wad/), runs in Node
+npm run test:e2e  # end-to-end — Playwright drives a real WebGPU Chromium via ?e2e
+```
+
+Unit tests cover the pure logic (movement momentum, entity blocking, thing
+classification). E2E boots the actual engine, asserts WebGPU initializes and the level
+builds, and drives input through the `window.__doom` handle (the `?e2e` URL param lets
+the sim run without pointer lock). E2E manages the dev server itself.
+
 ### Dedicated container server (optional)
 
 For a serve port that survives editor/session churn, serve the production build

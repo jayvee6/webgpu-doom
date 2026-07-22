@@ -132,7 +132,10 @@ const ITEMS = new Set([
   5, 40, 6, 39, 13, 38, // keys
 ]);
 
-export type ThingCategory = "monster" | "item" | "decor";
+// "player" is never returned by thingCategory() — the player map-object is
+// constructed explicitly (GameState.pmo), not spawned from a thing. It's part of
+// the union so Entity.kind can tag it.
+export type ThingCategory = "monster" | "item" | "decor" | "player";
 
 /** Classify a thing type for entity behavior (monsters fight, items are picked up). */
 export function thingCategory(type: number): ThingCategory {

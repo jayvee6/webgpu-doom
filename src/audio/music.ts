@@ -57,26 +57,31 @@ function parseMus(data: Uint8Array): MusEvent[] {
 
 export class MusicPlayer {
   private readonly wad: Wad;
-  private readonly ctx: AudioContext | null;
+  private readonly getCtx: () => AudioContext | null;
   private masterGain: GainNode | null;
   private activeOscs = new Map<string, { osc: OscillatorNode; gain: GainNode }>();
   private loopTimer: ReturnType<typeof setTimeout> | null = null;
   private currentLump = "";
+  private started = false; // did the current lump actually get scheduled (vs dropped on a suspended ctx)?
 
-  constructor(wad: Wad, ctx: AudioContext | null) {
+  constructor(wad: Wad, getCtx: () => AudioContext | null) {
     this.wad = wad;
-    this.ctx = ctx;
-    if (ctx) {
+    this.getCtx = getCtx;
+    this.masterGain = null;
+  }
+
+  private ensureAudio(): { ctx: AudioContext; gain: GainNode } | null {
+    const ctx = this.getCtx();
+    if (!ctx || ctx.state !== "running") return null;
+    if (this.masterGain === null) {
       this.masterGain = ctx.createGain();
       this.masterGain.gain.value = 0.5;
       this.masterGain.connect(ctx.destination);
-    } else {
-      this.masterGain = null;
     }
+    return { ctx, gain: this.masterGain };
   }
 
   start(lumpName: string): void {
-    if (!this.ctx || !this.masterGain) return;
     this.stop();
     const idx = this.wad.indexOf(lumpName);
     if (idx < 0) return;
@@ -88,15 +93,21 @@ export class MusicPlayer {
   }
 
   private scheduleEvents(events: MusEvent[]): void {
-    const ctx = this.ctx;
-    const masterGain = this.masterGain;
-    if (!ctx || !masterGain) return;
+    const audio = this.ensureAudio();
+    if (!audio) return; // context not running yet; resume() will re-drive start() once it is
+    this.started = true;
+    const { ctx, gain: masterGain } = audio;
     const now = ctx.currentTime + 0.05;
     const duration = events.length > 0 ? events[events.length - 1]!.timeSec + 0.5 : 0;
     for (const ev of events) {
       const t = now + ev.timeSec;
       const key = ev.channel + "_" + ev.note;
       if (ev.on) {
+        const existing = this.activeOscs.get(key);
+        if (existing) {
+          try { existing.gain.gain.setValueAtTime(0, t); existing.osc.stop(t + 0.01); } catch { /* already stopped */ }
+          this.activeOscs.delete(key);
+        }
         const freq = ev.channel === 15 ? 55 : 440 * Math.pow(2, (ev.note - 69) / 12);
         const osc = ctx.createOscillator();
         osc.type = ev.channel === 15 ? "sawtooth" : "square";
@@ -125,10 +136,21 @@ export class MusicPlayer {
     }, duration * 1000);
   }
 
+  /**
+   * Re-drive playback after the AudioContext becomes running. start() is called at
+   * level build time, which for the first level happens before the user gesture that
+   * unlocks audio — so the track is requested but never scheduled. Call this once the
+   * context is confirmed running (see SoundSystem.resume) to start that pending track.
+   */
+  resume(): void {
+    if (this.currentLump && !this.started) this.start(this.currentLump);
+  }
+
   stop(): void {
     if (this.loopTimer !== null) { clearTimeout(this.loopTimer); this.loopTimer = null; }
     this.currentLump = "";
-    const t = this.ctx?.currentTime ?? 0;
+    this.started = false;
+    const t = this.getCtx()?.currentTime ?? 0;
     for (const { osc, gain } of this.activeOscs.values()) {
       try { gain.gain.setValueAtTime(0, t); osc.stop(t + 0.01); } catch { /* already stopped */ }
     }

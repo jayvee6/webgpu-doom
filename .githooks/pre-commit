@@ -1,0 +1,10 @@
+#!/bin/sh
+# Fast pre-commit gate: typecheck + unit tests. E2E is slow and needs a browser, so it
+# runs in CI and via `npm run test:e2e` — not here. Bypass in a pinch: git commit --no-verify.
+set -e
+
+echo "› pre-commit: typecheck"
+npm run typecheck
+
+echo "› pre-commit: unit tests"
+npm test

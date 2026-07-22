@@ -60,6 +60,10 @@ export class Wireframe {
   readonly frameLayout: GPUBindGroupLayout;
   readonly vertexCount: number;
   readonly bounds: MapBounds;
+  /** Last view written by setView: [centerX, centerY, scale, aspect]. Zeroed until
+   *  setView runs — introspected by tests to assert the automap uniform is seeded
+   *  (a zero scale means the shader divides by zero → blank automap). */
+  lastView: [number, number, number, number] = [0, 0, 0, 0];
 
   constructor(device: GPUDevice, format: GPUTextureFormat, map: DoomMap) {
     this.device = device;
@@ -144,7 +148,8 @@ export class Wireframe {
     const aspect = canvasW / canvasH;
     // After dividing ndc.x by aspect, x extent = mapW*scale/aspect; fit both axes.
     const scale = Math.min((2 * margin * aspect) / mapW, (2 * margin) / mapH);
-    this.device.queue.writeBuffer(this.ubuf, 0, new Float32Array([cx, cy, scale, aspect]));
+    this.lastView = [cx, cy, scale, aspect];
+    this.device.queue.writeBuffer(this.ubuf, 0, new Float32Array(this.lastView));
   }
 
   dispose(): void {

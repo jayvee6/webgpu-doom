@@ -6,10 +6,15 @@
  */
 
 import type { DoomMap } from "../wad/maps";
+import type { Entity } from "./state"; // type-only → erased at compile, no runtime import cycle
 
 export const PLAYER_RADIUS = 16;
 export const PLAYER_HEIGHT = 56;
 export const STEP_HEIGHT = 24;
+// Upper bound on any blocking entity's radius (monsters are 20, player 16). Used to
+// size the broadphase query so no potential overlapper is missed; the precise test
+// below uses each entity's actual radius, so over-querying only costs a few candidates.
+const MAX_BLOCKER_RADIUS = 32;
 
 const ML_BLOCKING = 0x0001;
 
@@ -45,6 +50,37 @@ export function blocked(map: DoomMap, x: number, y: number, pf: number, lineIdxs
     for (const i of lineIdxs) if (test(i)) return true;
   } else {
     for (let i = 0; i < map.linedefs.length; i++) if (test(i)) return true;
+  }
+  return false;
+}
+
+/** Living monsters and the player block movement; corpses, items, decor, projectiles don't. */
+function isBlocker(e: Entity): boolean {
+  if (e.kind === "player") return true;
+  return !!e.ai && e.ai.state !== "dead";
+}
+
+/**
+ * Would `mover` at candidate position (nx,ny) overlap any OTHER blocking entity?
+ * Circle test on radii, gated by vertical overlap so things can pass over/under each
+ * other (e.g. walk beneath a floating cacodemon, over a corpse).
+ *
+ * `queryNear` is the EntityGrid broadphase; its result is a SHARED array valid only
+ * until the next query — this consumes it fully before returning, so callers must not
+ * hold a prior query result across this call.
+ */
+export function blockedByEntity(
+  queryNear: (x: number, y: number, r: number) => Entity[],
+  mover: Entity, nx: number, ny: number,
+): boolean {
+  const r = mover.radius;
+  const mz0 = mover.z, mz1 = mover.z + mover.height;
+  for (const o of queryNear(nx, ny, r + MAX_BLOCKER_RADIUS)) {
+    if (o === mover || !o.active || !isBlocker(o)) continue;
+    if (mz1 <= o.z || o.z + o.height <= mz0) continue; // no vertical overlap → can pass
+    const dx = nx - o.x, dy = ny - o.y;
+    const rr = r + o.radius;
+    if (dx * dx + dy * dy < rr * rr) return true;
   }
   return false;
 }

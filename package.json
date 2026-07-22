@@ -10,12 +10,18 @@
     "preview": "vite preview",
     "serve:container": "bash scripts/serve-container.sh",
     "fetch-wad": "bash scripts/fetch-wad.sh",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@webgpu/types": "^0.1.60",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "@types/earcut": "^3.0.0",
