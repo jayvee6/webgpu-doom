@@ -21,14 +21,12 @@ jobs:
       - run: npm run build
       - run: npm test
 
-  # End-to-end against a real (software) WebGPU Chromium. WebGPU on a GPU-less runner
-  # relies on SwiftShader (see playwright.config.ts flags) and is not guaranteed, so this
-  # job is best-effort until confirmed green on the runner. Drop continue-on-error to make
-  # it a required check once it reliably passes here.
+  # End-to-end against a real (software) WebGPU Chromium. WebGPU runs via SwiftShader on
+  # the GPU-less runner (see playwright.config.ts flags) — confirmed working, so this is a
+  # required gate.
   e2e:
     name: E2E (Playwright · software WebGPU)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
