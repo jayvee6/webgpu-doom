@@ -46,21 +46,21 @@ export class StatusBar {
 
   draw(health: number, armor: number, ammo: number): void {
     const W = window.innerWidth, H = window.innerHeight;
-    if (this.canvas.width !== W || this.canvas.height !== H) {
-      this.canvas.width = W; this.canvas.height = H;
+    const BAR_H = Math.max(36, Math.round(H * 0.07));
+    if (this.canvas.width !== W || this.canvas.height !== BAR_H) {
+      this.canvas.width = W; this.canvas.height = BAR_H;
     }
     const c = this.ctx;
-    c.clearRect(0, 0, W, H);
-    const BAR_H = Math.max(36, Math.round(H * 0.07));
-    const y0 = H - BAR_H;
+    c.clearRect(0, 0, W, BAR_H);
+    const y0 = 0;
     c.fillStyle = "rgba(0,0,0,0.72)";
-    c.fillRect(0, y0, W, BAR_H);
-    c.fillStyle = "rgba(125,255,138,0.18)";
-    c.fillRect(0, y0, W, 1);
+    c.fillRect(0, 0, W, BAR_H);
+    c.fillStyle = "rgba(125,255,138,0.30)";
+    c.fillRect(0, 0, W, 1);
     const third = W / 3;
-    this.drawNum(c, Math.max(0, Math.floor(health)), third * 0.5, y0, BAR_H, "#ff5555", "HEALTH");
-    this.drawNum(c, Math.max(0, Math.floor(armor)),  third * 1.5, y0, BAR_H, "#5599ff", "ARMOR");
-    this.drawNum(c, Math.max(0, Math.floor(ammo)),   third * 2.5, y0, BAR_H, "#ffdd55", "AMMO");
+    this.drawNum(c, Math.max(0, Math.floor(ammo)),   third * 0.5, y0, BAR_H, "#ffdd55", "AMMO");
+    this.drawNum(c, Math.max(0, Math.floor(health)), third * 1.5, y0, BAR_H, "#ff5555", "HEALTH");
+    this.drawNum(c, Math.max(0, Math.floor(armor)),  third * 2.5, y0, BAR_H, "#5599ff", "ARMOR");
   }
 
   private drawNum(
@@ -93,9 +93,11 @@ export class StatusBar {
       c.fillText(text, cx, y0 + BAR_H * 0.72);
     }
     c.font = `${Math.round(BAR_H * 0.22)}px ui-monospace,Menlo,monospace`;
-    c.fillStyle = "rgba(125,255,138,0.55)";
+    c.globalAlpha = 0.7;
+    c.fillStyle = color;
     c.textAlign = "center";
-    c.fillText(label, cx, y0 + BAR_H - 3);
+    c.fillText(label, cx, y0 + BAR_H * 0.96);
+    c.globalAlpha = 1.0;
   }
 
   dispose(): void {}

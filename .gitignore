@@ -10,3 +10,4 @@ playwright-report/
 # WADs are fetched, never committed (keep repo asset-clean)
 public/*.wad
 *.wad
+.vercel

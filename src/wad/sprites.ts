@@ -23,6 +23,7 @@ export class SpriteLib {
   private readonly wad: Wad;
   private readonly names = new Set<string>();
   private readonly cache = new Map<string, SpriteImage | null>();
+  private readonly mirrorPairMap = new Map<string, string>();
 
   constructor(wad: Wad) {
     this.wad = wad;
@@ -32,6 +33,17 @@ export class SpriteLib {
     for (let i = start + 1; i < end; i++) {
       const lump = wad.lumps[i]!;
       if (lump.size > 0) this.names.add(lump.name);
+    }
+    for (const n of this.names) {
+      if (n.length !== 8) continue;
+      // 8-char lump: sprite4(0-3) frame1(4) rot1(5) frame2(6) rot2(7)
+      const sprite4 = n.slice(0, 4);
+      const frame1 = n[4]!;
+      const rot1 = n[5]!;
+      const frame2 = n[6]!;
+      const rot2 = n[7]!;
+      this.mirrorPairMap.set(sprite4 + frame1 + rot1, n);
+      this.mirrorPairMap.set(sprite4 + frame2 + rot2, n);
     }
   }
 
@@ -68,13 +80,10 @@ export class SpriteLib {
    * Falls back to resolveLump() if no rotation-specific lump is found.
    */
   resolveLumpForRot(sprite: string, frame: string, rot: number): string | null {
-    const rotStr = String(rot);
-    const direct = sprite + frame + rotStr;
-    if (this.names.has(direct)) return direct;
-    // Mirror pairs: 8-char names like "TROOA2A8" — rot at index 5 or 7
-    for (const n of this.names) {
-      if (n.length === 8 && n.startsWith(sprite + frame) && (n[5] === rotStr || n[7] === rotStr)) return n;
-    }
+    const key = sprite + frame + String(rot);
+    if (this.names.has(key)) return key;
+    const mirror = this.mirrorPairMap.get(key);
+    if (mirror) return mirror;
     return this.resolveLump(sprite, frame);
   }
 
